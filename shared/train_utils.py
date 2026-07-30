@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import csv
 import random
 from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -101,7 +104,43 @@ class PITDPhysicsLoss(nn.Module):
         return total_loss, l_data, l_ah, l_range
 
 
-def evaluate_dataset(model, loader: DataLoader, scaler, config, label: str):
+def _safe_metric_name(label: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "_" for ch in label).strip("_")
+
+
+def _save_eval_metrics(label: str, avg_mae: float, file_maes: dict, batch_size: int, output_dir, run_id: str | None):
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    label_name = _safe_metric_name(label)
+    suffix = f"_{run_id}" if run_id else ""
+
+    summary_path = output_path / f"{label_name}_summary{suffix}.csv"
+    files_path = output_path / f"{label_name}_file_mae{suffix}.csv"
+
+    with summary_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=["label", "avg_mae", "files", "batch_size", "saved_at"])
+        writer.writeheader()
+        writer.writerow(
+            {
+                "label": label,
+                "avg_mae": avg_mae,
+                "files": len(file_maes),
+                "batch_size": batch_size,
+                "saved_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+
+    with files_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=["filename", "mae"])
+        writer.writeheader()
+        for filename, mae in sorted(file_maes.items()):
+            writer.writerow({"filename": filename, "mae": mae})
+
+    print(f"[{label}] metrics saved: {summary_path}")
+    print(f"[{label}] file MAE saved: {files_path}")
+
+
+def evaluate_dataset(model, loader: DataLoader, scaler, config, label: str, output_dir=None, run_id: str | None = None):
     if len(loader.dataset) == 0:
         raise ValueError(f"Cannot evaluate empty dataset: {label}")
 
@@ -143,4 +182,6 @@ def evaluate_dataset(model, loader: DataLoader, scaler, config, label: str):
     print(f"[{label}] files={len(file_maes)} batch={batch_size} avg_mae={avg_mae:.4f}")
     if worst:
         print(f"[{label}] worst files: " + ", ".join(f"{fn}:{mae:.4f}" for fn, mae in worst))
+    if output_dir is not None:
+        _save_eval_metrics(label, avg_mae, file_maes, batch_size, output_dir, run_id)
     return avg_mae, file_maes

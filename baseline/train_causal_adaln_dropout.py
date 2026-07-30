@@ -267,8 +267,24 @@ def train_causal_adaln_dropout():
     model.load_state_dict(best_ckpt["model_state_dict"])
     print("Loaded best checkpoint for final evaluation.")
 
-    evaluate_dataset(model, test_random_loader, scaler, {"DEVICE": config["DEVICE"], "D_MODEL": config["D_MODEL"]}, label="Test random")
-    evaluate_dataset(model, test_fixed_loader, scaler, {"DEVICE": config["DEVICE"], "D_MODEL": config["D_MODEL"]}, label="Test fixed")
+    evaluate_dataset(
+        model,
+        test_random_loader,
+        scaler,
+        {"DEVICE": config["DEVICE"], "D_MODEL": config["D_MODEL"]},
+        label="Test random",
+        output_dir=config["CSV_DIR"],
+        run_id=run_id,
+    )
+    evaluate_dataset(
+        model,
+        test_fixed_loader,
+        scaler,
+        {"DEVICE": config["DEVICE"], "D_MODEL": config["D_MODEL"]},
+        label="Test fixed",
+        output_dir=config["CSV_DIR"],
+        run_id=run_id,
+    )
 
 
 if __name__ == "__main__":

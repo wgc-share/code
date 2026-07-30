@@ -30,7 +30,9 @@ def main():
     results_dir = baseline_results_dir()
     pth_dir = results_dir / "pth_save"
     pt_dir = results_dir / "pt"
+    csv_dir = results_dir / "csv_save"
     pt_dir.mkdir(parents=True, exist_ok=True)
+    csv_dir.mkdir(parents=True, exist_ok=True)
 
     ckpts = list(pth_dir.glob("best_model_PINT_SchemeB_CAUSAL_ADALN_DROPOUT_V1_*.pth"))
     if not ckpts:
@@ -44,8 +46,8 @@ def main():
     train_f, val_f, test_random_f, test_fixed_f = split_soccc_by_cells(data_dir, split_file)
     window_size = cfg.get("WINDOW_SIZE", 100)
     stride = cfg.get("STRIDE", 100)
-    test_random_ds = BatteryTDGCMDataset(data_dir, test_random_f, window_size=window_size, stride=stride, cache_file=os.path.join(pt_dir, "test_random_eval_cache.pt"))
-    test_fixed_ds = BatteryTDGCMDataset(data_dir, test_fixed_f, window_size=window_size, stride=stride, cache_file=os.path.join(pt_dir, "test_fixed_eval_cache.pt"))
+    test_random_ds = BatteryTDGCMDataset(data_dir, test_random_f, window_size=window_size, stride=stride, cache_file=os.path.join(pt_dir, "test_random_cache_causal_adaln_dropout.pt"))
+    test_fixed_ds = BatteryTDGCMDataset(data_dir, test_fixed_f, window_size=window_size, stride=stride, cache_file=os.path.join(pt_dir, "test_fixed_cache_causal_adaln_dropout.pt"))
 
     test_random_loader = DataLoader(test_random_ds, batch_size=1, shuffle=False)
     test_fixed_loader = DataLoader(test_fixed_ds, batch_size=1, shuffle=False)
@@ -63,8 +65,25 @@ def main():
     scaler = PITDScaler()
     scaler.stats = ckpt["scaler_stats"]
 
-    evaluate_dataset(model, test_random_loader, scaler, {"DEVICE": device, "D_MODEL": cfg["D_MODEL"]}, label="Test random")
-    evaluate_dataset(model, test_fixed_loader, scaler, {"DEVICE": device, "D_MODEL": cfg["D_MODEL"]}, label="Test fixed")
+    eval_run_id = f"eval_{ckpt_path.stem.replace('best_model_', '')}"
+    evaluate_dataset(
+        model,
+        test_random_loader,
+        scaler,
+        {"DEVICE": device, "D_MODEL": cfg["D_MODEL"]},
+        label="Test random",
+        output_dir=csv_dir,
+        run_id=eval_run_id,
+    )
+    evaluate_dataset(
+        model,
+        test_fixed_loader,
+        scaler,
+        {"DEVICE": device, "D_MODEL": cfg["D_MODEL"]},
+        label="Test fixed",
+        output_dir=csv_dir,
+        run_id=eval_run_id,
+    )
 
 
 if __name__ == "__main__":
