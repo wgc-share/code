@@ -8,7 +8,9 @@ import os
 import random
 import sys
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
+from multiprocessing import get_context
 from pathlib import Path
 
 import numpy as np
@@ -176,7 +178,12 @@ def train_one_trial(trial_config: dict, datasets: tuple, scaler: PITDScaler, csv
         epoch_reset_lanes = 0
         epoch_reset_batches = 0
 
-        pbar = tqdm(total=manager.total_steps, desc=f"{trial_id} epoch {epoch + 1}/{trial_config['EPOCHS']}", colour="blue")
+        pbar = tqdm(
+            total=manager.total_steps,
+            desc=f"{trial_id} epoch {epoch + 1}/{trial_config['EPOCHS']}",
+            colour="blue",
+            disable=trial_config.get("DISABLE_TQDM", False),
+        )
         while True:
             indices, masks, is_first, finished = manager.get_next_batch()
             if finished:
@@ -224,8 +231,14 @@ def train_one_trial(trial_config: dict, datasets: tuple, scaler: PITDScaler, csv
             model,
             val_loader,
             scaler,
-            {"DEVICE": trial_config["DEVICE"], "D_MODEL": trial_config["D_MODEL"]},
+            {
+                "DEVICE": trial_config["DEVICE"],
+                "D_MODEL": trial_config["D_MODEL"],
+                "DISABLE_TQDM": trial_config.get("DISABLE_TQDM", False),
+            },
             label=f"{trial_id} epoch {epoch + 1} val",
+            output_dir=None,
+            run_id=None,
         )
         scheduler.step()
 
@@ -276,7 +289,11 @@ def train_one_trial(trial_config: dict, datasets: tuple, scaler: PITDScaler, csv
         model,
         test_random_loader,
         scaler,
-        {"DEVICE": trial_config["DEVICE"], "D_MODEL": trial_config["D_MODEL"]},
+        {
+            "DEVICE": trial_config["DEVICE"],
+            "D_MODEL": trial_config["D_MODEL"],
+            "DISABLE_TQDM": trial_config.get("DISABLE_TQDM", False),
+        },
         label=f"{trial_id} test random",
         output_dir=csv_dir,
         run_id=trial_id,
@@ -285,7 +302,11 @@ def train_one_trial(trial_config: dict, datasets: tuple, scaler: PITDScaler, csv
         model,
         test_fixed_loader,
         scaler,
-        {"DEVICE": trial_config["DEVICE"], "D_MODEL": trial_config["D_MODEL"]},
+        {
+            "DEVICE": trial_config["DEVICE"],
+            "D_MODEL": trial_config["D_MODEL"],
+            "DISABLE_TQDM": trial_config.get("DISABLE_TQDM", False),
+        },
         label=f"{trial_id} test fixed",
         output_dir=csv_dir,
         run_id=trial_id,
@@ -300,6 +321,59 @@ def train_one_trial(trial_config: dict, datasets: tuple, scaler: PITDScaler, csv
         "checkpoint": str(best_model_path),
         **{key: trial_config[key] for key in trial_config["TUNED_KEYS"]},
     }
+
+
+def failed_trial_result(trial_config: dict, exc: BaseException) -> dict:
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return {
+        "trial_id": trial_config["TRIAL_ID"],
+        "best_epoch": math.nan,
+        "best_val_mae": math.nan,
+        "test_random_mae": math.nan,
+        "test_fixed_mae": math.nan,
+        "checkpoint": "",
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        **{key: trial_config[key] for key in trial_config["TUNED_KEYS"]},
+    }
+
+
+def run_trial_worker(trial_config: dict) -> dict:
+    try:
+        datasets = load_datasets(trial_config)
+        scaler = PITDScaler()
+        scaler.fit(datasets[0])
+        return train_one_trial(
+            trial_config,
+            datasets,
+            scaler,
+            Path(trial_config["CSV_DIR"]),
+            Path(trial_config["PTH_DIR"]),
+            trial_config["TRIAL_ID"],
+        )
+    except BaseException as exc:
+        return failed_trial_result(trial_config, exc)
+
+
+def build_trial_config(base_config: dict, trial: dict, tuned_keys: list[str], args: argparse.Namespace, search_id: str, trial_index: int) -> dict:
+    return {
+        **base_config,
+        **trial,
+        "SEED": args.seed + trial_index - 1,
+        "TRIAL_INDEX": trial_index,
+        "TRIAL_ID": f"{search_id}_trial{trial_index:03d}",
+        "TUNED_KEYS": tuned_keys,
+        "DISABLE_TQDM": args.parallel_trials > 1,
+    }
+
+
+def write_summary(summary_rows: list[dict], summary_path: Path):
+    summary_df = pd.DataFrame(summary_rows)
+    if "best_val_mae" in summary_df.columns:
+        summary_df = summary_df.sort_values("best_val_mae", na_position="last")
+    summary_df.to_csv(summary_path, index=False)
+    return summary_df
 
 
 def main():
@@ -323,8 +397,11 @@ def main():
     parser.add_argument("--grad-clips", default="1.0")
     parser.add_argument("--window-size", type=int, default=100)
     parser.add_argument("--stride", type=int, default=100)
+    parser.add_argument("--parallel-trials", type=int, default=1, help="Number of trial processes to run at the same time on the same machine/GPU.")
     parser.add_argument("--dry-run", action="store_true", help="Print generated trials and exit without loading data or training.")
     args = parser.parse_args()
+    if args.parallel_trials < 1:
+        raise ValueError("--parallel-trials must be >= 1")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     search_id = datetime.now().strftime("hparam_%m%d_%H%M%S")
@@ -364,6 +441,7 @@ def main():
     print(f"DEVICE    : {device}")
     print(f"TRIALS    : {len(trials)}")
     print(f"EPOCHS    : {args.epochs}")
+    print(f"PARALLEL  : {args.parallel_trials}")
     print(f"CSV_DIR   : {csv_dir}")
     print(f"PTH_DIR   : {pth_dir}")
 
@@ -391,50 +469,64 @@ def main():
     }
     (meta_dir / "search_config.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-    datasets = load_datasets(base_config)
-    train_ds = datasets[0]
-    scaler = PITDScaler()
-    scaler.fit(train_ds)
-
     summary_rows = []
     summary_path = csv_dir / f"hparam_summary_{search_id}.csv"
 
-    for trial_index, trial in enumerate(trials, start=1):
-        trial_id = f"{search_id}_trial{trial_index:03d}"
-        trial_config = {
-            **base_config,
-            **trial,
-            "SEED": args.seed + trial_index - 1,
-            "TRIAL_INDEX": trial_index,
-            "TRIAL_ID": trial_id,
-            "TUNED_KEYS": tuned_keys,
-        }
-        try:
-            result = train_one_trial(trial_config, datasets, scaler, csv_dir, pth_dir, trial_id)
-        except RuntimeError as exc:
-            if "out of memory" in str(exc).lower():
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                result = {
-                    "trial_id": trial_id,
-                    "best_epoch": math.nan,
-                    "best_val_mae": math.nan,
-                    "test_random_mae": math.nan,
-                    "test_fixed_mae": math.nan,
-                    "checkpoint": "",
-                    "error": str(exc),
-                    **trial,
-                }
-                print(f"[{trial_id}] failed with CUDA/RuntimeError: {exc}")
-            else:
-                raise
+    trial_configs = [
+        build_trial_config(base_config, trial, tuned_keys, args, search_id, trial_index)
+        for trial_index, trial in enumerate(trials, start=1)
+    ]
 
-        summary_rows.append(result)
-        pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
-        print(f"[{trial_id}] summary updated: {summary_path}")
+    if args.parallel_trials == 1:
+        datasets = load_datasets(base_config)
+        train_ds = datasets[0]
+        scaler = PITDScaler()
+        scaler.fit(train_ds)
 
-    final_df = pd.DataFrame(summary_rows).sort_values("best_val_mae", na_position="last")
-    final_df.to_csv(summary_path, index=False)
+        for trial_config in trial_configs:
+            trial_id = trial_config["TRIAL_ID"]
+            try:
+                result = train_one_trial(trial_config, datasets, scaler, csv_dir, pth_dir, trial_id)
+            except RuntimeError as exc:
+                if "out of memory" in str(exc).lower():
+                    result = failed_trial_result(trial_config, exc)
+                    print(f"[{trial_id}] failed with CUDA/RuntimeError: {exc}")
+                else:
+                    raise
+
+            summary_rows.append(result)
+            write_summary(summary_rows, summary_path)
+            print(f"[{trial_id}] summary updated: {summary_path}")
+    else:
+        print("Prebuilding shared dataset caches before launching parallel trial processes...")
+        cache_datasets = load_datasets(base_config)
+        cache_scaler = PITDScaler()
+        cache_scaler.fit(cache_datasets[0])
+        del cache_scaler
+        del cache_datasets
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        worker_count = min(args.parallel_trials, len(trial_configs))
+        print(f"Launching {worker_count} parallel trial processes.")
+        mp_context = get_context("spawn")
+        with ProcessPoolExecutor(max_workers=worker_count, mp_context=mp_context) as executor:
+            future_to_trial = {executor.submit(run_trial_worker, trial_config): trial_config for trial_config in trial_configs}
+            for future in as_completed(future_to_trial):
+                trial_config = future_to_trial[future]
+                trial_id = trial_config["TRIAL_ID"]
+                try:
+                    result = future.result()
+                except BaseException as exc:
+                    result = failed_trial_result(trial_config, exc)
+                    print(f"[{trial_id}] worker crashed: {type(exc).__name__}: {exc}")
+
+                summary_rows.append(result)
+                write_summary(summary_rows, summary_path)
+                status = "failed" if result.get("error") else "finished"
+                print(f"[{trial_id}] {status}; summary updated: {summary_path}")
+
+    final_df = write_summary(summary_rows, summary_path)
     print("\n=== Search finished ===")
     print(final_df.head(10).to_string(index=False))
     print(f"Summary saved: {summary_path}")

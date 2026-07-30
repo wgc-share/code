@@ -151,7 +151,13 @@ def evaluate_dataset(model, loader: DataLoader, scaler, config, label: str, outp
     h_state = torch.zeros(1, batch_size, config["D_MODEL"], device=config["DEVICE"])
 
     with torch.no_grad():
-        pbar = tqdm(total=manager.total_steps, desc=f"{label} eval", leave=False, colour="green")
+        pbar = tqdm(
+            total=manager.total_steps,
+            desc=f"{label} eval",
+            leave=False,
+            colour="green",
+            disable=config.get("DISABLE_TQDM", False),
+        )
         while True:
             indices, masks, is_first, finished = manager.get_next_batch()
             if finished:

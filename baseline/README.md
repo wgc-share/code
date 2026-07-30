@@ -26,6 +26,12 @@ python .\code\baseline\tune_causal_adaln_dropout.py --dry-run
 python .\code\baseline\tune_causal_adaln_dropout.py --epochs 50
 ```
 
+Single-GPU parallel trial search:
+
+```powershell
+python .\code\baseline\tune_causal_adaln_dropout.py --epochs 50 --parallel-trials 10
+```
+
 Default grid:
 
 - `LR`: `5e-5,1e-4,2e-4`
