@@ -185,9 +185,9 @@ def evaluate_dataset(model, loader: DataLoader, scaler, config, label: str, outp
     file_maes = {fn: float(np.mean(errs)) for fn, errs in file_errors.items()}
     avg_mae = float(np.mean(list(file_maes.values()))) if file_maes else float("nan")
     worst = sorted(file_maes.items(), key=lambda kv: kv[1], reverse=True)[:3]
-    print(f"[{label}] files={len(file_maes)} batch={batch_size} avg_mae={avg_mae:.4f}")
-    if worst:
-        print(f"[{label}] worst files: " + ", ".join(f"{fn}:{mae:.4f}" for fn, mae in worst))
+    # print(f"[{label}] files={len(file_maes)} batch={batch_size} avg_mae={avg_mae:.4f}")
+    # if worst:
+    #     print(f"[{label}] worst files: " + ", ".join(f"{fn}:{mae:.4f}" for fn, mae in worst))
     if output_dir is not None:
         _save_eval_metrics(label, avg_mae, file_maes, batch_size, output_dir, run_id)
     return avg_mae, file_maes
