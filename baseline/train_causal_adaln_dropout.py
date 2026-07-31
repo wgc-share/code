@@ -56,7 +56,7 @@ def train_causal_adaln_dropout():
         "META_DIR": str(meta_dir),
         "BATCH_SIZE": 64,
         "VAL_BATCH_SIZE": 64,
-        "LR": 1e-4,
+        "LR": 2e-4,
         "EPOCHS": 50,
         "D_MODEL": 64,
         "NHEAD": 4,
