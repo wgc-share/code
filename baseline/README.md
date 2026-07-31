@@ -53,7 +53,7 @@ python .\code\baseline\tune_preset_soc_start_causal_adaln_dropout.py --dry-run
 python .\code\baseline\tune_preset_soc_start_causal_adaln_dropout.py --epochs 50 --parallel-trials 8
 ```
 
-This keeps the mainline hyperparameters fixed (`LR=2e-4`, `DROPOUT=0.1`, `D_MODEL=64`, `NHEAD=4`, `NUM_LAYERS=2`) and trains one model for each `P_RESET` value. Each best-validation checkpoint is evaluated on SOC start points `100,90,80,70,60,50,40,30,20,10`; only aggregate metrics are saved under `results/baseline/p_reset_soc_start/<search_id>/`.
+This keeps the mainline hyperparameters fixed (`LR=2e-4`, `DROPOUT=0.1`, `D_MODEL=64`, `NHEAD=4`, `NUM_LAYERS=2`) and trains one model for each `P_RESET` value. Each best-validation checkpoint is evaluated on SOC start points `100,90,80,70,60,50,40,30,20,10`; only metrics are saved under `results/baseline/p_reset_soc_start/<search_id>/`. The summary contains both total MAE and segment-level MAE: 4 random-test segments and 12 fixed-test segments.
 
 Default grid:
 

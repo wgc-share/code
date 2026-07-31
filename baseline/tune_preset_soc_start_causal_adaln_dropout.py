@@ -30,12 +30,34 @@ from adaln_model import BatteryTDGCMModel as AdaLNBatteryTDGCMModel
 from eval_soc_start_causal_adaln_dropout import filter_from_soc_start
 from project_paths import baseline_results_dir, processed_segments_dir, split_file_path
 from scaling import PITDScaler
-from soccc_schemeB import BatteryTDGCMDataset, split_soccc_by_cells
+from soccc_schemeB import BatteryTDGCMDataset, parse_segment_filename, split_soccc_by_cells
 from torch_io import load_torch_file, save_torch_file
 from train_utils import BalancedSchemeBManager, PITDPhysicsLoss, evaluate_dataset, set_seed
 
 
 PROJECT = "PINT_SchemeB_CAUSAL_ADALN_P_RESET_SOC_START"
+
+RANDOM_SEGMENT_MAP = {
+    1: (1, "random_segment01", "calibration"),
+    2: (2, "random_segment02", "digested"),
+    3: (3, "random_segment03", "highway"),
+    4: (4, "random_segment04", "urban"),
+}
+
+FIXED_SEGMENT_MAP = {
+    ("3-1", 1): (1, "fixed_segment01", "HWFET"),
+    ("3-1", 2): (2, "fixed_segment02", "US06_HWY"),
+    ("3-1", 3): (3, "fixed_segment03", "REP05"),
+    ("3-2", 1): (4, "fixed_segment04", "DST"),
+    ("3-2", 2): (5, "fixed_segment05", "EUDC"),
+    ("3-2", 3): (6, "fixed_segment06", "ARTERIAL"),
+    ("3-3", 1): (7, "fixed_segment07", "LA92"),
+    ("3-3", 2): (8, "fixed_segment08", "SC03"),
+    ("3-3", 3): (9, "fixed_segment09", "UDDS"),
+    ("3-4", 1): (10, "fixed_segment10", "MANHATTAN"),
+    ("3-4", 2): (11, "fixed_segment11", "NYCC"),
+    ("3-4", 3): (12, "fixed_segment12", "NUREMBERG"),
+}
 
 
 def parse_float_list(value: str) -> list[float]:
@@ -112,6 +134,79 @@ def build_model(config: dict):
         dropout=config["DROPOUT"],
         use_causal=True,
     ).to(config["DEVICE"])
+
+
+def segment_info(split_name: str, filename: str):
+    meta = parse_segment_filename(filename)
+    cell_id = str(meta.get("cell_id", ""))
+    segment_index = int(meta.get("segment_index", -1))
+    if split_name == "test_random":
+        mapped = RANDOM_SEGMENT_MAP.get(segment_index)
+    elif split_name == "test_fixed":
+        mapped = FIXED_SEGMENT_MAP.get((cell_id, segment_index))
+    else:
+        mapped = None
+    if mapped is None:
+        return None
+    order, segment_id, condition = mapped
+    return {
+        "segment_order": order,
+        "segment_id": segment_id,
+        "condition": condition,
+        "cell_id": cell_id,
+        "segment_index": segment_index,
+    }
+
+
+def aggregate_segment_rows(config: dict, split_name: str, split_order: int, soc_start: float, soc_order: int, file_maes: dict, dataset):
+    grouped_maes = defaultdict(list)
+    grouped_files = defaultdict(set)
+    grouped_windows = defaultdict(int)
+    grouped_info = {}
+
+    for filename, mae in file_maes.items():
+        info = segment_info(split_name, filename)
+        if info is None:
+            continue
+        key = info["segment_id"]
+        grouped_maes[key].append(mae)
+        grouped_files[key].add(filename)
+        grouped_info[key] = info
+
+    for sample in dataset.samples:
+        info = segment_info(split_name, sample["filenames"])
+        if info is None:
+            continue
+        key = info["segment_id"]
+        grouped_windows[key] += 1
+        grouped_info[key] = info
+
+    rows = []
+    for key, maes in grouped_maes.items():
+        info = grouped_info[key]
+        rows.append(
+            {
+                "trial_id": config["TRIAL_ID"],
+                "trial_index": config["TRIAL_INDEX"],
+                "p_reset": config["P_RESET"],
+                "split_order": split_order,
+                "split": split_name,
+                "soc_start_order": soc_order,
+                "soc_start_percent": soc_start,
+                "metric_order": 2,
+                "metric_level": "segment",
+                "segment_order": info["segment_order"],
+                "segment_id": info["segment_id"],
+                "condition": info["condition"],
+                "cell_id": info["cell_id"],
+                "segment_index": info["segment_index"],
+                "avg_mae": float(np.mean(maes)),
+                "files": len(grouped_files[key]),
+                "windows": grouped_windows[key],
+                "batch_size": config["SOC_BATCH_SIZE"],
+            }
+        )
+    return sorted(rows, key=lambda row: row["segment_order"])
 
 
 def train_best_checkpoint(config: dict, train_ds, val_ds, scaler: PITDScaler, csv_dir: Path, pth_dir: Path):
@@ -268,6 +363,13 @@ def evaluate_soc_starts(config: dict, checkpoint_path: Path, scaler: PITDScaler,
                         "split": split_name,
                         "soc_start_order": soc_order,
                         "soc_start_percent": soc_start,
+                        "metric_order": 1,
+                        "metric_level": "total",
+                        "segment_order": 0,
+                        "segment_id": "total",
+                        "condition": "total",
+                        "cell_id": "",
+                        "segment_index": "",
                         "avg_mae": float("nan"),
                         "files": 0,
                         "windows": 0,
@@ -289,19 +391,37 @@ def evaluate_soc_starts(config: dict, checkpoint_path: Path, scaler: PITDScaler,
                 label=f"{config['TRIAL_ID']} {split_name} SOC<= {soc_start:g}%",
             )
             rows.append(
-                    {
-                        "trial_id": config["TRIAL_ID"],
-                        "trial_index": config["TRIAL_INDEX"],
-                        "p_reset": config["P_RESET"],
-                        "split_order": split_order,
-                        "split": split_name,
-                        "soc_start_order": soc_order,
-                        "soc_start_percent": soc_start,
-                        "avg_mae": avg_mae,
-                        "files": len(file_maes),
+                {
+                    "trial_id": config["TRIAL_ID"],
+                    "trial_index": config["TRIAL_INDEX"],
+                    "p_reset": config["P_RESET"],
+                    "split_order": split_order,
+                    "split": split_name,
+                    "soc_start_order": soc_order,
+                    "soc_start_percent": soc_start,
+                    "metric_order": 1,
+                    "metric_level": "total",
+                    "segment_order": 0,
+                    "segment_id": "total",
+                    "condition": "total",
+                    "cell_id": "",
+                    "segment_index": "",
+                    "avg_mae": avg_mae,
+                    "files": len(file_maes),
                     "windows": len(filtered_ds),
                     "batch_size": config["SOC_BATCH_SIZE"],
                 }
+            )
+            rows.extend(
+                aggregate_segment_rows(
+                    config,
+                    split_name,
+                    split_order,
+                    soc_start,
+                    soc_order,
+                    file_maes,
+                    filtered_ds,
+                )
             )
 
     trial_path = csv_dir / f"soc_start_metrics_{config['TRIAL_ID']}.csv"
@@ -350,6 +470,13 @@ def run_trial(config: dict):
                 "split": "",
                 "soc_start_order": math.nan,
                 "soc_start_percent": float("nan"),
+                "metric_order": math.nan,
+                "metric_level": "error",
+                "segment_order": math.nan,
+                "segment_id": "",
+                "condition": "",
+                "cell_id": "",
+                "segment_index": "",
                 "avg_mae": float("nan"),
                 "files": 0,
                 "windows": 0,
@@ -370,7 +497,11 @@ def run_trial(config: dict):
 
 def write_summary(rows: list[dict], path: Path):
     df = pd.DataFrame(rows)
-    sort_cols = [col for col in ("trial_index", "split_order", "soc_start_order") if col in df.columns]
+    sort_cols = [
+        col
+        for col in ("trial_index", "split_order", "soc_start_order", "metric_order", "segment_order")
+        if col in df.columns
+    ]
     if sort_cols:
         df = df.sort_values(sort_cols, na_position="last")
     df.to_csv(path, index=False, encoding="utf-8-sig")
@@ -379,7 +510,7 @@ def write_summary(rows: list[dict], path: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="Tune P_RESET and evaluate each model on SOC-start test tasks.")
-    parser.add_argument("--p-resets", default="0,0.025,0.05,0.75,0.1,0.15,0.2,0.25")
+    parser.add_argument("--p-resets", default="0,0.025,0.05,0.075,0.1,0.15,0.2,0.25")
     parser.add_argument("--starts", default="100,90,80,70,60,50,40,30,20,10")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
@@ -523,6 +654,13 @@ def main():
                             "split": "",
                             "soc_start_order": math.nan,
                             "soc_start_percent": float("nan"),
+                            "metric_order": math.nan,
+                            "metric_level": "error",
+                            "segment_order": math.nan,
+                            "segment_id": "",
+                            "condition": "",
+                            "cell_id": "",
+                            "segment_index": "",
                             "avg_mae": float("nan"),
                             "files": 0,
                             "windows": 0,
