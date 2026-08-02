@@ -20,6 +20,55 @@ python .\code\baseline\train_causal_adaln_dropout.py
 python .\code\baseline\eval_causal_adaln_dropout.py
 ```
 
+Filtered-temperature mainline:
+
+```powershell
+python .\code\baseline\train_causal_adaln_dropout_filtered_temps.py --dry-run
+python .\code\baseline\train_causal_adaln_dropout_filtered_temps.py
+```
+
+This is the same mainline method (`causal transformer + AdaLN + hidden-state dropout`, `P_RESET=0.05`) but keeps only files within `10,25,40C +/-2C`. It writes caches, checkpoints, logs, and metrics under `results/baseline/filtered_temps/`.
+
+When started without `--mode`, it asks:
+
+- input `1`: start a new training run
+- input `2`: load the latest checkpoint under `results/baseline/filtered_temps/pth_save/` and run testing only
+
+Non-interactive alternatives:
+
+```powershell
+python .\code\baseline\train_causal_adaln_dropout_filtered_temps.py --mode train
+python .\code\baseline\train_causal_adaln_dropout_filtered_temps.py --mode eval
+python .\code\baseline\train_causal_adaln_dropout_filtered_temps.py --mode soc-eval
+```
+
+Testing writes total metrics plus segment-condition metrics to `results/baseline/filtered_temps/csv_save/test_segment_metrics_*.csv`. Segment metrics use the same mapping as the SOC-start experiments: 4 random-test conditions and 12 fixed-test conditions.
+
+`--mode soc-eval` evaluates the latest filtered-temperature checkpoint from SOC start points `100,90,80,70,60,50,40,30,20,10` on the same `10,25,40C +/-2C` filtered random/fixed test sets. It writes `soc_start_metrics_*.csv` and `soc_start_total_summary_*.csv`; each SOC start contains total metrics plus 4 random-test segment conditions and 12 fixed-test segment conditions.
+
+SOC-start augmented filtered-temperature training:
+
+```powershell
+python .\code\baseline\train_causal_adaln_soc_start_aug_filtered_temps.py --dry-run
+python .\code\baseline\train_causal_adaln_soc_start_aug_filtered_temps.py
+```
+
+This keeps the same filtered temperature scope (`10,25,40C +/-2C`) and causal AdaLN model, but disables random hidden-state reset. For each training segment, it samples one division count from `{8,9,10,11,12}` and converts the segment into multiple SOC-start sub-trajectories from the sampled SOC starts down to 0 SOC. Each sub-trajectory is treated as an independent stateful training segment with zero initial hidden state.
+
+When started without `--mode`, it asks:
+
+- input `1`: start a new SOC-start augmented training run
+- input `2`: load the latest checkpoint under `results/baseline/soc_start_aug_filtered_temps/pth_save/` and run multi-SOC-start testing only
+
+Non-interactive alternatives:
+
+```powershell
+python .\code\baseline\train_causal_adaln_soc_start_aug_filtered_temps.py --mode train
+python .\code\baseline\train_causal_adaln_soc_start_aug_filtered_temps.py --mode eval
+```
+
+Results are written under `results/baseline/soc_start_aug_filtered_temps/`. Testing writes `soc_start_metrics_*.csv` and `soc_start_total_summary_*.csv`, including total metrics plus 4 random-test segment conditions and 12 fixed-test segment conditions for each SOC start.
+
 SOC-start evaluation:
 
 ```powershell
