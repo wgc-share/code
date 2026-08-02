@@ -91,7 +91,7 @@ def make_config():
         "VAL_BATCH_SIZE": 64,
         "SOC_BATCH_SIZE": 64,
         "LR": 2e-4,
-        "EPOCHS": 200,
+        "EPOCHS": 50,
         "D_MODEL": 96,
         "NHEAD": 4,
         "NUM_LAYERS": 2,
@@ -530,6 +530,8 @@ def train_causal_adaln_dropout():
     print("Loaded best checkpoint for final evaluation.")
 
     evaluate_test_splits(model, scaler, datasets, config, run_id)
+    print("\nRunning automatic multi-SOC-start evaluation after training...")
+    evaluate_soc_start_splits(model, scaler, datasets, config, run_id)
 
 
 def eval_latest_checkpoint():
@@ -545,8 +547,10 @@ def eval_latest_checkpoint():
     config["CSV_DIR"] = fresh_config["CSV_DIR"]
     config["META_DIR"] = fresh_config["META_DIR"]
     config["VAL_BATCH_SIZE"] = fresh_config["VAL_BATCH_SIZE"]
+    config["SOC_BATCH_SIZE"] = fresh_config["SOC_BATCH_SIZE"]
     config["TEMPS"] = ckpt_config.get("TEMPS", TEMP_TARGETS)
     config["TEMP_TOLERANCE"] = ckpt_config.get("TEMP_TOLERANCE", TEMP_TOLERANCE)
+    config["SOC_STARTS"] = ckpt_config.get("SOC_STARTS", SOC_STARTS)
 
     print("=== Evaluate latest filtered-temperature baseline checkpoint ===")
     print(f"CHECKPOINT : {ckpt_path}")
@@ -563,6 +567,8 @@ def eval_latest_checkpoint():
     timestamp = datetime.now().strftime("%m%d_%H%M")
     run_id = f"eval_{ckpt_path.stem}_{timestamp}"
     evaluate_test_splits(model, scaler, datasets, config, run_id)
+    print("\nRunning automatic multi-SOC-start evaluation for latest checkpoint...")
+    evaluate_soc_start_splits(model, scaler, datasets, config, run_id)
 
 
 def eval_latest_soc_start_checkpoint(starts: list[float], soc_batch_size: int):

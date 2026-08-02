@@ -13,3 +13,4 @@ Current mainline protocol:
 
 Files:
 - `train_causal_adaln_dropout_filtered_temps_dmodel96.py`: lightly enlarged capacity variant. It changes `D_MODEL` from `64` to `96`; other mainline settings are kept unchanged.
+- `tune_capacity_causal_adaln_dropout_filtered_temps.py`: 30-trial capacity sweep over `D_MODEL`, `NHEAD`, and `NUM_LAYERS`. It keeps the mainline data split, filtered temperatures, `p_reset`, normal test, and multi-SOC-start test unchanged.
