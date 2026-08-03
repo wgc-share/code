@@ -35,7 +35,7 @@ from torch_io import load_torch_file, save_torch_file
 from tune_preset_soc_start_causal_adaln_dropout import aggregate_segment_rows
 
 
-PROJECT = "PINT_SchemeB_CAUSAL_ADALN_DROPOUT_FILTERED_TEMPS_DMODEL96_H4_L3_E150_AHMAX1000"
+PROJECT = "PINT_SchemeB_CAUSAL_ADALN_DROPOUT_FILTERED_TEMPS_DMODEL96_H4_L3"
 TEMP_TARGETS = [10.0, 25.0, 40.0]
 TEMP_TOLERANCE = 2.0
 SOC_STARTS = [100.0, 90.0, 80.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0]
@@ -60,7 +60,7 @@ def filter_files_by_temperature(files: list[str], temps: list[float], tolerance:
 
 
 def _make_results_dirs():
-    base = organized_results_dir() / "baseline_tune" / "dmodel96_h4_l3_e150_ahmax1000_filtered_temps"
+    base = organized_results_dir() / "baseline_tune" / "dmodel96_h4_l3_filtered_temps"
     cache_dir = base / "pt"
     pth_dir = base / "pth_save"
     csv_dir = base / "csv_save"
@@ -91,15 +91,13 @@ def make_config():
         "VAL_BATCH_SIZE": 64,
         "SOC_BATCH_SIZE": 64,
         "LR": 2e-4,
-        "ETA_MIN": 2e-5,
-        "EPOCHS": 150,
+        "EPOCHS": 50,
         "D_MODEL": 96,
         "NHEAD": 4,
         "NUM_LAYERS": 3,
         "DROPOUT": 0.1,
         "LAMBDA_AH_START": 10,
         "LAMBDA_AH_STEP": 20.0,
-        "LAMBDA_AH_MAX": 1000.0,
         "GRAD_CLIP": 1.0,
         "P_RESET": 0.05,
         "TEMPS": TEMP_TARGETS,
@@ -121,17 +119,10 @@ def print_config(config: dict):
     print(f"DEVICE     : {config['DEVICE']}")
     print(f"BATCH_SIZE : {config['BATCH_SIZE']}")
     print(f"VAL_BATCH  : {config['VAL_BATCH_SIZE']} (deterministic stateful lanes)")
-    print(f"EPOCHS     : {config['EPOCHS']}")
-    print(f"LR         : {config['LR']}")
-    print(f"ETA_MIN    : {config['ETA_MIN']}")
     print(f"D_MODEL    : {config['D_MODEL']}")
     print(f"NHEAD      : {config['NHEAD']}")
     print(f"LAYERS     : {config['NUM_LAYERS']}")
     print(f"DROPOUT    : {config['DROPOUT']}")
-    print(
-        f"LAMBDA_AH  : start={config['LAMBDA_AH_START']}, "
-        f"step={config['LAMBDA_AH_STEP']}, max={config['LAMBDA_AH_MAX']}"
-    )
     print(f"P_RESET    : {config['P_RESET']}")
     print(f"TEMPS      : {config['TEMPS']}")
     print(f"TEMP_TOL   : +/-{config['TEMP_TOLERANCE']} C")
@@ -409,11 +400,7 @@ def train_causal_adaln_dropout():
 
     optimizer = optim.AdamW(model.parameters(), lr=config["LR"], weight_decay=1e-5)
     criterion = PITDPhysicsLoss()
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=config["EPOCHS"],
-        eta_min=config["ETA_MIN"],
-    )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config["EPOCHS"])
     best_overall_mae = float("inf")
     best_model_path = os.path.join(config["PTH_DIR"], f"best_model_{run_id}.pth")
     history = []
@@ -425,10 +412,7 @@ def train_causal_adaln_dropout():
         h_state = torch.zeros(1, config["BATCH_SIZE"], config["D_MODEL"], device=config["DEVICE"])
         pbar = tqdm(total=manager.total_steps, desc=f"Epoch {epoch+1}/{config['EPOCHS']} Training", colour="blue")
 
-        curr_lambda = min(
-            config["LAMBDA_AH_START"] + epoch * config["LAMBDA_AH_STEP"],
-            config["LAMBDA_AH_MAX"],
-        )
+        curr_lambda = config["LAMBDA_AH_START"] + epoch * config["LAMBDA_AH_STEP"]
         print(
             f"[Epoch {epoch+1}] start | lambda_ah={curr_lambda:.2f} | "
             f"train_windows={len(train_ds)} | val_windows={len(val_ds)} | steps={manager.total_steps} | "

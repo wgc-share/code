@@ -12,5 +12,6 @@ Current mainline protocol:
 - multi-SOC-start evaluation unchanged
 
 Files:
-- `train_causal_adaln_dropout_filtered_temps_dmodel96.py`: lightly enlarged capacity variant. It changes `D_MODEL` from `64` to `96`; other mainline settings are kept unchanged.
+- `train_causal_adaln_dropout_filtered_temps_dmodel96.py`: selected capacity variant from the sweep. It uses `D_MODEL=96`, `NHEAD=4`, `NUM_LAYERS=3`, `EPOCHS=150`, cosine `eta_min=2e-5`, and `LAMBDA_AH_MAX=1000`; the mainline data split, filtered temperatures, normal test, and multi-SOC-start test are kept unchanged.
+- `train_causal_adaln_dropout_filtered_temps_dmodel96_backup_before_epoch150_20260803.py`: backup of the same script before the `EPOCHS=150`, `eta_min`, and AhLoss cap changes.
 - `tune_capacity_causal_adaln_dropout_filtered_temps.py`: 30-trial capacity sweep over `D_MODEL`, `NHEAD`, and `NUM_LAYERS`. It keeps the mainline data split, filtered temperatures, `p_reset`, normal test, and multi-SOC-start test unchanged.
