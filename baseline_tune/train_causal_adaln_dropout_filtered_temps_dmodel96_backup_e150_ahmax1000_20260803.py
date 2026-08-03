@@ -35,7 +35,7 @@ from torch_io import load_torch_file, save_torch_file
 from tune_preset_soc_start_causal_adaln_dropout import aggregate_segment_rows
 
 
-PROJECT = "PINT_SchemeB_CAUSAL_ADALN_DROPOUT_FILTERED_TEMPS_DMODEL96_H4_L3_E100_2STAGE_AHMAX1000"
+PROJECT = "PINT_SchemeB_CAUSAL_ADALN_DROPOUT_FILTERED_TEMPS_DMODEL96_H4_L3_E150_AHMAX1000"
 TEMP_TARGETS = [10.0, 25.0, 40.0]
 TEMP_TOLERANCE = 2.0
 SOC_STARTS = [100.0, 90.0, 80.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0]
@@ -60,7 +60,7 @@ def filter_files_by_temperature(files: list[str], temps: list[float], tolerance:
 
 
 def _make_results_dirs():
-    base = organized_results_dir() / "baseline_tune" / "dmodel96_h4_l3_e100_2stage_ahmax1000_filtered_temps"
+    base = organized_results_dir() / "baseline_tune" / "dmodel96_h4_l3_e150_ahmax1000_filtered_temps"
     cache_dir = base / "pt"
     pth_dir = base / "pth_save"
     csv_dir = base / "csv_save"
@@ -91,10 +91,8 @@ def make_config():
         "VAL_BATCH_SIZE": 64,
         "SOC_BATCH_SIZE": 64,
         "LR": 2e-4,
-        "STAGE1_EPOCHS": 50,
-        "STAGE1_ETA_MIN": 2e-5,
-        "STAGE2_ETA_MIN": 5e-6,
-        "EPOCHS": 100,
+        "ETA_MIN": 2e-5,
+        "EPOCHS": 150,
         "D_MODEL": 96,
         "NHEAD": 4,
         "NUM_LAYERS": 3,
@@ -125,11 +123,7 @@ def print_config(config: dict):
     print(f"VAL_BATCH  : {config['VAL_BATCH_SIZE']} (deterministic stateful lanes)")
     print(f"EPOCHS     : {config['EPOCHS']}")
     print(f"LR         : {config['LR']}")
-    print(
-        f"LR_SCHEDULE: 2-stage cosine | "
-        f"stage1={config['STAGE1_EPOCHS']} epochs, "
-        f"eta1={config['STAGE1_ETA_MIN']}, eta2={config['STAGE2_ETA_MIN']}"
-    )
+    print(f"ETA_MIN    : {config['ETA_MIN']}")
     print(f"D_MODEL    : {config['D_MODEL']}")
     print(f"NHEAD      : {config['NHEAD']}")
     print(f"LAYERS     : {config['NUM_LAYERS']}")
@@ -204,26 +198,6 @@ def build_model(config: dict):
         dropout=config["DROPOUT"],
         use_causal=True,
     ).to(config["DEVICE"])
-
-
-def two_stage_cosine_lr(config: dict, epoch: int) -> float:
-    stage1_epochs = int(config["STAGE1_EPOCHS"])
-    if epoch < stage1_epochs:
-        progress = epoch / max(stage1_epochs - 1, 1)
-        return config["STAGE1_ETA_MIN"] + 0.5 * (config["LR"] - config["STAGE1_ETA_MIN"]) * (
-            1.0 + math.cos(math.pi * progress)
-        )
-
-    stage2_epochs = int(config["EPOCHS"]) - stage1_epochs
-    progress = (epoch - stage1_epochs) / max(stage2_epochs - 1, 1)
-    return config["STAGE2_ETA_MIN"] + 0.5 * (config["STAGE1_ETA_MIN"] - config["STAGE2_ETA_MIN"]) * (
-        1.0 + math.cos(math.pi * progress)
-    )
-
-
-def set_optimizer_lr(optimizer, lr: float):
-    for group in optimizer.param_groups:
-        group["lr"] = lr
 
 
 def write_test_segment_metrics(rows: list[dict], csv_dir: str, run_id: str):
@@ -435,14 +409,17 @@ def train_causal_adaln_dropout():
 
     optimizer = optim.AdamW(model.parameters(), lr=config["LR"], weight_decay=1e-5)
     criterion = PITDPhysicsLoss()
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config["EPOCHS"],
+        eta_min=config["ETA_MIN"],
+    )
     best_overall_mae = float("inf")
     best_model_path = os.path.join(config["PTH_DIR"], f"best_model_{run_id}.pth")
     history = []
     val_mae_matrix = defaultdict(list)
 
     for epoch in range(config["EPOCHS"]):
-        current_lr = two_stage_cosine_lr(config, epoch)
-        set_optimizer_lr(optimizer, current_lr)
         model.train()
         manager = BalancedSchemeBManager(train_ds, config["BATCH_SIZE"])
         h_state = torch.zeros(1, config["BATCH_SIZE"], config["D_MODEL"], device=config["DEVICE"])
@@ -453,7 +430,7 @@ def train_causal_adaln_dropout():
             config["LAMBDA_AH_MAX"],
         )
         print(
-            f"[Epoch {epoch+1}] start | lr={current_lr:.8f} | lambda_ah={curr_lambda:.2f} | "
+            f"[Epoch {epoch+1}] start | lambda_ah={curr_lambda:.2f} | "
             f"train_windows={len(train_ds)} | val_windows={len(val_ds)} | steps={manager.total_steps} | "
             f"p_reset={config['P_RESET']:.3f}"
         )
@@ -513,6 +490,7 @@ def train_causal_adaln_dropout():
         pbar.close()
 
         avg_val_mae, file_maes = evaluate_dataset(model, val_loader, scaler, {"DEVICE": config["DEVICE"], "D_MODEL": config["D_MODEL"]}, label=f"Epoch {epoch+1} Val")
+        scheduler.step()
         for fn, mae in file_maes.items():
             val_mae_matrix[fn].append(mae)
 
@@ -525,7 +503,6 @@ def train_causal_adaln_dropout():
                 "Train_Range_Loss": float(np.mean(epoch_range_losses)) if epoch_range_losses else float("nan"),
                 "Val_MAE_Avg": avg_val_mae,
                 "Lambda": curr_lambda,
-                "LR": current_lr,
                 "Reset_Lanes": epoch_reset_lanes,
                 "Reset_Batches": epoch_reset_batches,
             }
@@ -544,7 +521,7 @@ def train_causal_adaln_dropout():
             f"train_data={train_data:.6f} | "
             f"train_ah={train_ah:.6f} | "
             f"train_range={train_range:.6f} | "
-            f"val_mae={avg_val_mae:.4f} | lr={current_lr:.8f} | lambda_ah={curr_lambda:.2f} | "
+            f"val_mae={avg_val_mae:.4f} | lambda_ah={curr_lambda:.2f} | "
             f"reset_lanes={epoch_reset_lanes} | reset_batches={epoch_reset_batches}"
         )
 
