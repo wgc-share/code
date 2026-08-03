@@ -15,4 +15,6 @@ Files:
 - `train_causal_adaln_dropout_filtered_temps_dmodel96.py`: selected capacity variant from the sweep. It uses `D_MODEL=96`, `NHEAD=4`, `NUM_LAYERS=3`, `EPOCHS=100`, two-stage cosine learning rate (`2e-4 -> 2e-5` for the first 50 epochs, then `2e-5 -> 5e-6`), and `LAMBDA_AH_MAX=1000`; the mainline data split, filtered temperatures, normal test, and multi-SOC-start test are kept unchanged.
 - `train_causal_adaln_dropout_filtered_temps_dmodel96_backup_before_epoch150_20260803.py`: backup of the same script before the `EPOCHS=150`, `eta_min`, and AhLoss cap changes.
 - `train_causal_adaln_dropout_filtered_temps_dmodel96_backup_e150_ahmax1000_20260803.py`: backup of the `EPOCHS=150`, cosine `eta_min=2e-5`, and AhLoss cap version before changing to the two-stage schedule.
+- `baseline_d96head4lay3.py`: accepted baseline method, using `D_MODEL=96`, `NHEAD=4`, `NUM_LAYERS=3`, `EPOCHS=50`, and the original cosine schedule.
+- `repeat_baseline_d96head4lay3.py`: repeats the accepted baseline method over multiple seeds, default 20 runs, and writes per-run metrics plus mean/std/min/max/median aggregates.
 - `tune_capacity_causal_adaln_dropout_filtered_temps.py`: 30-trial capacity sweep over `D_MODEL`, `NHEAD`, and `NUM_LAYERS`. It keeps the mainline data split, filtered temperatures, `p_reset`, normal test, and multi-SOC-start test unchanged.
