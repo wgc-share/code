@@ -38,10 +38,6 @@ from tune_preset_soc_start_causal_adaln_dropout import aggregate_segment_rows
 PROJECT = "PINT_SchemeB_CAUSAL_ADALN_DROPOUT_FILTERED_TEMPS_DMODEL96_H4_L3"
 TEMP_TARGETS = [10.0, 25.0, 40.0]
 TEMP_TOLERANCE = 2.0
-TEMP_GENERALIZATION_RANGES = [
-    ("T15_20C", 15.0, 20.0),
-    ("T30_35C", 30.0, 35.0),
-]
 SOC_STARTS = [100.0, 90.0, 80.0, 70.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0]
 
 
@@ -59,15 +55,6 @@ def filter_files_by_temperature(files: list[str], temps: list[float], tolerance:
     for filename in files:
         temp_c = float(parse_segment_filename(filename).get("temp_C", float("nan")))
         if any(abs(temp_c - target) <= tolerance for target in targets):
-            kept.append(filename)
-    return kept
-
-
-def filter_files_by_temperature_range(files: list[str], low_c: float, high_c: float) -> list[str]:
-    kept = []
-    for filename in files:
-        temp_c = float(parse_segment_filename(filename).get("temp_C", float("nan")))
-        if low_c <= temp_c <= high_c:
             kept.append(filename)
     return kept
 
@@ -192,46 +179,6 @@ def load_all_datasets(config: dict):
         cache_file=os.path.join(config["CACHE_DIR"], f"test_fixed_cache_causal_adaln_dropout_{suffix}.pt"),
     )
     return train_ds, val_ds, test_random_ds, test_fixed_ds
-
-
-def load_temperature_generalization_test_datasets(config: dict, range_label: str, low_c: float, high_c: float):
-    _, _, test_random_f, test_fixed_f = split_soccc_by_cells(config["DATA_DIR"], config["SPLIT_FILE"])
-    raw_random = len(test_random_f)
-    raw_fixed = len(test_fixed_f)
-    test_random_f = filter_files_by_temperature_range(test_random_f, low_c, high_c)
-    test_fixed_f = filter_files_by_temperature_range(test_fixed_f, low_c, high_c)
-    print(
-        f"Temperature generalization filter: {range_label} [{low_c:g}, {high_c:g}] C | "
-        f"test_random={raw_random}->{len(test_random_f)} | "
-        f"test_fixed={raw_fixed}->{len(test_fixed_f)}"
-    )
-    if not test_random_f or not test_fixed_f:
-        raise RuntimeError(
-            f"Empty temperature-generalization test split for {range_label}: "
-            f"test_random={len(test_random_f)}, test_fixed={len(test_fixed_f)}"
-        )
-
-    test_random_ds = BatteryTDGCMDataset(
-        config["DATA_DIR"],
-        test_random_f,
-        window_size=config["WINDOW_SIZE"],
-        stride=config["STRIDE"],
-        cache_file=os.path.join(
-            config["CACHE_DIR"],
-            f"test_random_cache_causal_adaln_dropout_tempgen_{range_label}.pt",
-        ),
-    )
-    test_fixed_ds = BatteryTDGCMDataset(
-        config["DATA_DIR"],
-        test_fixed_f,
-        window_size=config["WINDOW_SIZE"],
-        stride=config["STRIDE"],
-        cache_file=os.path.join(
-            config["CACHE_DIR"],
-            f"test_fixed_cache_causal_adaln_dropout_tempgen_{range_label}.pt",
-        ),
-    )
-    return None, None, test_random_ds, test_fixed_ds
 
 
 def build_model(config: dict):
@@ -659,75 +606,6 @@ def eval_latest_soc_start_checkpoint(starts: list[float], soc_batch_size: int):
     evaluate_soc_start_splits(model, scaler, datasets, config, run_id)
 
 
-def eval_latest_temperature_generalization_checkpoint(
-    starts: list[float],
-    soc_batch_size: int,
-    temp_ranges: list[tuple[str, float, float]],
-):
-    config = make_config()
-    ckpt_path = latest_checkpoint(Path(config["PTH_DIR"]))
-    ckpt = load_torch_file(ckpt_path, map_location=config["DEVICE"])
-    ckpt_config = ckpt.get("config", {})
-    config.update(ckpt_config)
-    config["DEVICE"] = "cuda" if torch.cuda.is_available() else "cpu"
-    fresh_config = make_config()
-    config["CACHE_DIR"] = fresh_config["CACHE_DIR"]
-    config["PTH_DIR"] = fresh_config["PTH_DIR"]
-    config["CSV_DIR"] = fresh_config["CSV_DIR"]
-    config["META_DIR"] = fresh_config["META_DIR"]
-    config["SOC_STARTS"] = starts
-    config["SOC_BATCH_SIZE"] = soc_batch_size
-
-    print("=== Temperature-generalization multi-SOC evaluation for latest baseline checkpoint ===")
-    print(f"CHECKPOINT : {ckpt_path}")
-    print_config(config)
-    print(f"SOC_STARTS : {config['SOC_STARTS']}")
-    print(f"SOC_BATCH  : {config['SOC_BATCH_SIZE']}")
-    print(f"TEMP_RANGES: {[(label, low, high) for label, low, high in temp_ranges]}")
-
-    scaler = PITDScaler()
-    scaler.stats = ckpt["scaler_stats"]
-    model = build_model(config)
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.eval()
-
-    timestamp = datetime.now().strftime("%m%d_%H%M")
-    base_run_id = f"tempgen_soc_start_eval_{ckpt_path.stem}_{timestamp}"
-    detailed_frames = []
-
-    for range_order, (range_label, low_c, high_c) in enumerate(temp_ranges, start=1):
-        datasets = load_temperature_generalization_test_datasets(config, range_label, low_c, high_c)
-        run_id = f"{base_run_id}_{range_label}"
-        metrics_df = evaluate_soc_start_splits(model, scaler, datasets, config, run_id)
-        metrics_df = metrics_df.copy()
-        metrics_df.insert(0, "temp_range_order", range_order)
-        metrics_df.insert(1, "temp_range", range_label)
-        metrics_df.insert(2, "temp_low_C", low_c)
-        metrics_df.insert(3, "temp_high_C", high_c)
-        detailed_frames.append(metrics_df)
-
-    if not detailed_frames:
-        raise RuntimeError("No temperature-generalization metrics were produced.")
-
-    combined_df = pd.concat(detailed_frames, ignore_index=True)
-    combined_path = Path(config["CSV_DIR"]) / f"tempgen_soc_start_metrics_{base_run_id}.csv"
-    combined_total_path = Path(config["CSV_DIR"]) / f"tempgen_soc_start_total_summary_{base_run_id}.csv"
-    combined_df.to_csv(combined_path, index=False, encoding="utf-8-sig")
-    combined_df[combined_df["metric_level"].eq("total")].to_csv(
-        combined_total_path,
-        index=False,
-        encoding="utf-8-sig",
-    )
-    print(f"Temperature-generalization detailed metrics saved: {combined_path}")
-    print(f"Temperature-generalization total summary saved: {combined_total_path}")
-    print("\n=== Temperature-generalization total metrics ===")
-    print(
-        combined_df[combined_df["metric_level"].eq("total")][
-            ["temp_range", "split", "soc_start_percent", "avg_mae", "files", "windows"]
-        ].to_string(index=False)
-    )
-
-
 def eval_latest_soc_interval_checkpoint(intervals: list[tuple[float, float]], soc_batch_size: int):
     config = make_config()
     ckpt_path = latest_checkpoint(Path(config["PTH_DIR"]))
@@ -771,41 +649,16 @@ def parse_float_list(value: str) -> list[float]:
     return [float(item.strip()) for item in value.split(",") if item.strip()]
 
 
-def parse_temp_ranges(value: str) -> list[tuple[str, float, float]]:
-    ranges = []
-    for raw_item in value.split(","):
-        item = raw_item.strip()
-        if not item:
-            continue
-        bounds = item.split("-")
-        if len(bounds) != 2:
-            raise ValueError(f"Invalid temperature range: {item}. Expected format like 15-20.")
-        low_c = float(bounds[0].strip())
-        high_c = float(bounds[1].strip())
-        if low_c > high_c:
-            raise ValueError(f"Invalid temperature range: {item}. Low temperature is larger than high temperature.")
-        low_label = str(int(low_c)) if low_c.is_integer() else str(low_c).replace(".", "p")
-        high_label = str(int(high_c)) if high_c.is_integer() else str(high_c).replace(".", "p")
-        ranges.append((f"T{low_label}_{high_label}C", low_c, high_c))
-    if not ranges:
-        raise ValueError("No valid temperature ranges were provided.")
-    return ranges
-
-
 def main():
     parser = argparse.ArgumentParser(description="Train or evaluate filtered-temperature causal AdaLN dropout baseline.")
     parser.add_argument(
         "--mode",
-        choices=["train", "eval", "soc-eval", "interval-eval", "tempgen-soc-eval"],
+        choices=["train", "eval", "soc-eval", "interval-eval"],
         default=None,
-        help=(
-            "Non-interactive mode. train=1, eval=2, soc-eval=multi-SOC-start test, "
-            "interval-eval=SOC interval test, tempgen-soc-eval=4."
-        ),
+        help="Non-interactive mode. train=1, eval=2, soc-eval=multi-SOC-start test, interval-eval=SOC interval test.",
     )
     parser.add_argument("--starts", default="100,90,80,70,60,50,40,30,20,10")
     parser.add_argument("--intervals", default="100-90,90-80,80-70,70-60,60-50,50-40,40-30,30-20,20-10,10-0")
-    parser.add_argument("--temp-ranges", default="15-20,30-35")
     parser.add_argument("--soc-batch-size", type=int, default=64)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -817,7 +670,6 @@ def main():
         print_config(config)
         print(f"SOC_STARTS : {config['SOC_STARTS']}")
         print(f"SOC_BATCH  : {config['SOC_BATCH_SIZE']}")
-        print(f"TEMP_RANGES: {parse_temp_ranges(args.temp_ranges)}")
         print("Dry run only. No training or evaluation executed.")
         return
 
@@ -827,8 +679,7 @@ def main():
         print("1 - start a new training run")
         print("2 - evaluate the latest checkpoint under the result path")
         print("3 - evaluate the latest checkpoint within user-defined SOC intervals")
-        print("4 - evaluate temperature-generalization ranges with multi-SOC starts")
-        choice = input("Enter 1, 2, 3, or 4: ").strip()
+        choice = input("Enter 1, 2, or 3: ").strip()
         if choice == "1":
             mode = "train"
         elif choice == "2":
@@ -836,10 +687,8 @@ def main():
         elif choice == "3":
             args.intervals = ",".join(f"{high:g}-{low:g}" for high, low in prompt_soc_intervals())
             mode = "interval-eval"
-        elif choice == "4":
-            mode = "tempgen-soc-eval"
         else:
-            raise ValueError(f"Invalid choice: {choice}. Expected 1, 2, 3, or 4.")
+            raise ValueError(f"Invalid choice: {choice}. Expected 1, 2, or 3.")
 
     if mode == "train":
         train_causal_adaln_dropout()
@@ -849,12 +698,6 @@ def main():
         eval_latest_soc_start_checkpoint(parse_float_list(args.starts), args.soc_batch_size)
     elif mode == "interval-eval":
         eval_latest_soc_interval_checkpoint(parse_soc_intervals(args.intervals), args.soc_batch_size)
-    elif mode == "tempgen-soc-eval":
-        eval_latest_temperature_generalization_checkpoint(
-            parse_float_list(args.starts),
-            args.soc_batch_size,
-            parse_temp_ranges(args.temp_ranges),
-        )
     else:
         raise ValueError(f"Invalid mode: {mode}")
 
