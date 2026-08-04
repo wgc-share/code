@@ -68,6 +68,17 @@ def metric_value(metrics_df: pd.DataFrame, split: str) -> float:
     return float(pd.to_numeric(rows["avg_mae"], errors="coerce").mean())
 
 
+def metric_value_for_range(metrics_df: pd.DataFrame, range_label: str, split: str) -> float:
+    rows = metrics_df[
+        metrics_df["metric_level"].eq("total")
+        & metrics_df["temp_range"].eq(range_label)
+        & metrics_df["split"].eq(split)
+    ]
+    if rows.empty:
+        return float("nan")
+    return float(pd.to_numeric(rows["avg_mae"], errors="coerce").mean())
+
+
 def write_aggregate(final_rows: list[dict], aggregate_path: Path):
     df = pd.DataFrame(final_rows)
     metric_cols = [
@@ -78,9 +89,18 @@ def write_aggregate(final_rows: list[dict], aggregate_path: Path):
         "soc_random_mean_mae",
         "soc_fixed_mean_mae",
         "soc_mean_mae",
+        "tempgen_T15_20C_random_mean_mae",
+        "tempgen_T15_20C_fixed_mean_mae",
+        "tempgen_T15_20C_mean_mae",
+        "tempgen_T30_35C_random_mean_mae",
+        "tempgen_T30_35C_fixed_mean_mae",
+        "tempgen_T30_35C_mean_mae",
+        "tempgen_mean_mae",
     ]
     rows = []
     for metric in metric_cols:
+        if metric not in df.columns:
+            continue
         values = pd.to_numeric(df[metric], errors="coerce").dropna()
         rows.append(
             {
@@ -94,6 +114,41 @@ def write_aggregate(final_rows: list[dict], aggregate_path: Path):
             }
         )
     pd.DataFrame(rows).to_csv(aggregate_path, index=False, encoding="utf-8-sig")
+
+
+def evaluate_temperature_generalization_for_repeat(
+    model,
+    scaler: base.PITDScaler,
+    config: dict,
+    run_id: str,
+) -> pd.DataFrame:
+    detailed_frames = []
+    for range_order, (range_label, low_c, high_c) in enumerate(base.TEMP_GENERALIZATION_RANGES, start=1):
+        datasets = base.load_temperature_generalization_test_datasets(config, range_label, low_c, high_c)
+        range_run_id = f"{run_id}_tempgen_{range_label}"
+        metrics_df = base.evaluate_soc_start_splits(model, scaler, datasets, config, range_run_id)
+        metrics_df = metrics_df.copy()
+        metrics_df.insert(0, "temp_range_order", range_order)
+        metrics_df.insert(1, "temp_range", range_label)
+        metrics_df.insert(2, "temp_low_C", low_c)
+        metrics_df.insert(3, "temp_high_C", high_c)
+        detailed_frames.append(metrics_df)
+
+    if not detailed_frames:
+        return pd.DataFrame()
+
+    combined_df = pd.concat(detailed_frames, ignore_index=True)
+    combined_path = Path(config["CSV_DIR"]) / f"tempgen_soc_start_metrics_{run_id}.csv"
+    combined_total_path = Path(config["CSV_DIR"]) / f"tempgen_soc_start_total_summary_{run_id}.csv"
+    combined_df.to_csv(combined_path, index=False, encoding="utf-8-sig")
+    combined_df[combined_df["metric_level"].eq("total")].to_csv(
+        combined_total_path,
+        index=False,
+        encoding="utf-8-sig",
+    )
+    print(f"Temperature-generalization detailed metrics saved: {combined_path}")
+    print(f"Temperature-generalization total summary saved: {combined_total_path}")
+    return combined_df
 
 
 def run_one_repeat(
@@ -301,6 +356,7 @@ def run_one_repeat(
 
     test_df = base.evaluate_test_splits(model, scaler, datasets, config, run_id)
     soc_df = base.evaluate_soc_start_splits(model, scaler, datasets, config, run_id)
+    tempgen_df = evaluate_temperature_generalization_for_repeat(model, scaler, config, run_id)
 
     row = {
         "run_name": run_name,
@@ -318,6 +374,17 @@ def run_one_repeat(
     }
     row["test_mean_mae"] = float(np.nanmean([row["test_random_mae"], row["test_fixed_mae"]]))
     row["soc_mean_mae"] = float(np.nanmean([row["soc_random_mean_mae"], row["soc_fixed_mean_mae"]]))
+    tempgen_means = []
+    for range_label, _, _ in base.TEMP_GENERALIZATION_RANGES:
+        safe_label = range_label.replace("-", "_")
+        random_key = f"tempgen_{safe_label}_random_mean_mae"
+        fixed_key = f"tempgen_{safe_label}_fixed_mean_mae"
+        mean_key = f"tempgen_{safe_label}_mean_mae"
+        row[random_key] = metric_value_for_range(tempgen_df, range_label, "test_random")
+        row[fixed_key] = metric_value_for_range(tempgen_df, range_label, "test_fixed")
+        row[mean_key] = float(np.nanmean([row[random_key], row[fixed_key]]))
+        tempgen_means.append(row[mean_key])
+    row["tempgen_mean_mae"] = float(np.nanmean(tempgen_means))
     final_rows.append(row)
     pd.DataFrame(final_rows).to_csv(final_path, index=False, encoding="utf-8-sig")
     write_aggregate(final_rows, aggregate_path)
