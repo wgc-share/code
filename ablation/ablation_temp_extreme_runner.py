@@ -18,15 +18,17 @@ from tqdm import tqdm
 BASE_DIR = Path(__file__).resolve().parent
 CODE_ROOT = BASE_DIR.parent
 SHARED_DIR = CODE_ROOT / "shared"
+BASELINE_DIR = CODE_ROOT / "baseline"
 BASELINE_TUNE_DIR = CODE_ROOT / "baseline_tune"
 
-for path in (str(SHARED_DIR), str(BASELINE_TUNE_DIR), str(BASE_DIR)):
+for path in (str(SHARED_DIR), str(BASELINE_DIR), str(BASELINE_TUNE_DIR), str(BASE_DIR)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
 import baseline_d96head4lay3 as base
 from ablation_models import TempInputAdaLNCausalTransformerModel, TempInputCausalTransformerModel
 from adaln_model import BatteryTDGCMModel as AdaLNBatteryTDGCMModel
+from eval_soc_start_causal_adaln_dropout import filter_from_soc_start
 from scaling import PITDScaler
 from soccc_schemeB import BatteryTDGCMDataset, parse_segment_filename, split_soccc_by_cells
 from torch_io import load_torch_file, save_torch_file
@@ -268,6 +270,67 @@ def metric_value(metrics_df: pd.DataFrame, split: str) -> float:
     return float(pd.to_numeric(rows["avg_mae"], errors="coerce").mean())
 
 
+def train_one_epoch_stateful(model, train_ds, scaler, optimizer, criterion, config, epoch: int):
+    model.train()
+    manager = BalancedSchemeBManager(train_ds, config["BATCH_SIZE"])
+    h_state = torch.zeros(1, config["BATCH_SIZE"], config["D_MODEL"], device=config["DEVICE"])
+    pbar = tqdm(
+        total=manager.total_steps,
+        desc=f"Epoch {epoch}/{config['EPOCHS']} Training",
+        colour="blue",
+        disable=config.get("DISABLE_TQDM", False),
+    )
+    curr_lambda = 0.0 if not config["USE_AH_LOSS"] else config["LAMBDA_AH_START"] + (epoch - 1) * config["LAMBDA_AH_STEP"]
+    losses = defaultdict(list)
+    print(
+        f"[Epoch {epoch}/{config['EPOCHS']}] start | "
+        f"mode=stateful | train_windows={len(train_ds)} | steps={manager.total_steps} | "
+        f"p_reset={config['P_RESET']:.3f} | lambda_ah={curr_lambda:.2f}",
+        flush=True,
+    )
+
+    while True:
+        indices, masks, is_first, finished = manager.get_next_batch()
+        if finished:
+            break
+        samples = [train_ds[i] for i in indices]
+        x = torch.stack([s["x_dyn"] for s in samples]).to(config["DEVICE"])
+        t = torch.stack([s["t_mean"] for s in samples]).to(config["DEVICE"])
+        y = torch.stack([s["soc"] for s in samples]).to(config["DEVICE"])
+        q = torch.stack([s["Q"] for s in samples]).to(config["DEVICE"])
+        m_t = torch.tensor(masks, dtype=torch.float32, device=config["DEVICE"])
+        f_t = torch.tensor(is_first, dtype=torch.bool, device=config["DEVICE"])
+
+        h_state = h_state.detach()
+        if f_t.any():
+            h_state[:, f_t, :] = 0.0
+
+        active_mask = m_t > 0.5
+        eligible_mask = active_mask & (~f_t)
+        reset_mask = (torch.rand(config["BATCH_SIZE"], device=config["DEVICE"]) < config["P_RESET"]) & eligible_mask
+        reset_count = int(reset_mask.sum().item())
+        if reset_count > 0:
+            h_state[:, reset_mask, :] = 0.0
+
+        x_n, t_n = scaler.transform(x, t)
+        y_p, h_state = model(x_n, t_n, h_state)
+        loss, l_d, l_ah, l_range = criterion(y_p, y, x[:, :, 0], q, f_t, curr_lambda, m_t)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), config["GRAD_CLIP"])
+        optimizer.step()
+
+        losses["total"].append(loss.item())
+        losses["data"].append(l_d.item())
+        losses["ah"].append(l_ah.item())
+        losses["range"].append(l_range.item())
+        pbar.update(1)
+        pbar.set_postfix({"Loss": f"{loss.item():.4f}", "Reset": reset_count})
+    pbar.close()
+    return losses, curr_lambda
+
+
 def evaluate_test_splits(model, scaler: PITDScaler, datasets: tuple, config: dict, run_id: str):
     _, _, test_random_ds, test_fixed_ds = datasets
     rows = []
@@ -298,7 +361,7 @@ def evaluate_soc_start_splits(model, scaler: PITDScaler, datasets: tuple, config
     rows = []
     for split_order, (split_name, dataset) in enumerate((("test_random", datasets[2]), ("test_fixed", datasets[3])), start=1):
         for soc_order, soc_start in enumerate(config["SOC_STARTS"], start=1):
-            filtered_ds = base.filter_from_soc_start(dataset, soc_start)
+            filtered_ds = filter_from_soc_start(dataset, soc_start)
             loader = DataLoader(filtered_ds, batch_size=config["SOC_BATCH_SIZE"], shuffle=False)
             label = f"{split_name} | SOC start {soc_start:g}"
             avg_mae, file_maes = base.evaluate_dataset(
