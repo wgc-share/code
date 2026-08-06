@@ -136,6 +136,108 @@ class TempInputAdaLNCausalTransformerModel(nn.Module):
         return self.mlp(h_fusion), h_current
 
 
+class TempInputResidualAdapterCausalTransformerModel(nn.Module):
+    """Temperature input model with a lightweight temperature-guided residual adapter."""
+
+    def __init__(self, d_model=96, nhead=4, num_layers=3, dropout=0.1, bottleneck=24):
+        super().__init__()
+        self.d_model = d_model
+        self.embedding = nn.Linear(6, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            batch_first=True,
+            dim_feedforward=d_model * 4,
+            dropout=dropout,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.temp_embed = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.SiLU(),
+            nn.Linear(32, d_model),
+        )
+        self.adapter = nn.Sequential(
+            nn.Linear(d_model * 2, bottleneck),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(bottleneck, d_model),
+        )
+        self.alpha = nn.Parameter(torch.tensor(0.0))
+        self.gru = nn.GRU(input_size=d_model, hidden_size=d_model, batch_first=True)
+        self.mlp = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+
+    @staticmethod
+    def _causal_mask(seq_len: int, device):
+        return torch.triu(torch.full((seq_len, seq_len), float("-inf"), device=device), diagonal=1)
+
+    def forward(self, x_dyn, t_mean, h_prev=None):
+        t_seq = t_mean.unsqueeze(1).expand(-1, x_dyn.size(1), -1)
+        h = self.embedding(torch.cat([x_dyn, t_seq], dim=-1))
+        h = self.transformer(h, mask=self._causal_mask(h.size(1), h.device))
+
+        temp_context = self.temp_embed(t_mean).unsqueeze(1).expand_as(h)
+        delta = self.adapter(torch.cat([h, temp_context], dim=-1))
+        h = h + self.alpha * delta
+
+        if h_prev is None:
+            h_prev = torch.zeros(1, x_dyn.size(0), self.d_model, device=x_dyn.device, dtype=h.dtype)
+        h_fusion, h_current = self.gru(h, h_prev)
+        return self.mlp(h_fusion), h_current
+
+
+class TempInputGatedCausalTransformerModel(nn.Module):
+    """Temperature input model with temperature-gated Transformer output channels."""
+
+    def __init__(self, d_model=96, nhead=4, num_layers=3, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.embedding = nn.Linear(6, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            batch_first=True,
+            dim_feedforward=d_model * 4,
+            dropout=dropout,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.temp_gate = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.SiLU(),
+            nn.Linear(32, d_model),
+            nn.Sigmoid(),
+        )
+        self.alpha = nn.Parameter(torch.tensor(0.0))
+        self.gru = nn.GRU(input_size=d_model, hidden_size=d_model, batch_first=True)
+        self.mlp = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+
+    @staticmethod
+    def _causal_mask(seq_len: int, device):
+        return torch.triu(torch.full((seq_len, seq_len), float("-inf"), device=device), diagonal=1)
+
+    def forward(self, x_dyn, t_mean, h_prev=None):
+        t_seq = t_mean.unsqueeze(1).expand(-1, x_dyn.size(1), -1)
+        h = self.embedding(torch.cat([x_dyn, t_seq], dim=-1))
+        h = self.transformer(h, mask=self._causal_mask(h.size(1), h.device))
+
+        gate = self.temp_gate(t_mean).unsqueeze(1)
+        h = h * (1.0 + self.alpha * gate)
+
+        if h_prev is None:
+            h_prev = torch.zeros(1, x_dyn.size(0), self.d_model, device=x_dyn.device, dtype=h.dtype)
+        h_fusion, h_current = self.gru(h, h_prev)
+        return self.mlp(h_fusion), h_current
+
+
 class AdaLNNoStateTransferModel(AdaLNBatteryTDGCMModel):
     """AdaLN model that resets GRU hidden state for every window."""
 

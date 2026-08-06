@@ -26,7 +26,12 @@ for path in (str(SHARED_DIR), str(BASELINE_DIR), str(BASELINE_TUNE_DIR), str(BAS
         sys.path.insert(0, path)
 
 import baseline_d96head4lay3 as base
-from ablation_models import TempInputAdaLNCausalTransformerModel, TempInputCausalTransformerModel
+from ablation_models import (
+    TempInputAdaLNCausalTransformerModel,
+    TempInputCausalTransformerModel,
+    TempInputGatedCausalTransformerModel,
+    TempInputResidualAdapterCausalTransformerModel,
+)
 from adaln_model import BatteryTDGCMModel as AdaLNBatteryTDGCMModel
 from eval_soc_start_causal_adaln_dropout import filter_from_soc_start
 from scaling import PITDScaler
@@ -62,6 +67,20 @@ ABLATIONS = {
         "result_dir": "temp_extreme_temp_input_adaln_no_ah_13_37_d96h4l3",
         "title": "Temperature extrapolation [13, 37]: temp appended to input + AdaLN modulation, no Ah loss",
         "model": "temp_input_adaln",
+        "use_ah_loss": False,
+    },
+    "temp_input_adapter_no_ah": {
+        "project": f"{PROJECT}_TEMP_INPUT_ADAPTER_NO_AH",
+        "result_dir": "temp_extreme_temp_input_adapter_no_ah_13_37_d96h4l3",
+        "title": "Temperature extrapolation [13, 37]: temp input + temperature residual adapter, no Ah loss",
+        "model": "temp_input_adapter",
+        "use_ah_loss": False,
+    },
+    "temp_input_gate_no_ah": {
+        "project": f"{PROJECT}_TEMP_INPUT_GATE_NO_AH",
+        "result_dir": "temp_extreme_temp_input_gate_no_ah_13_37_d96h4l3",
+        "title": "Temperature extrapolation [13, 37]: temp input + temperature gated Transformer output, no Ah loss",
+        "model": "temp_input_gate",
         "use_ah_loss": False,
     },
 }
@@ -185,6 +204,10 @@ def build_model(config: dict):
         return TempInputCausalTransformerModel(**kwargs).to(config["DEVICE"])
     if kind == "temp_input_adaln":
         return TempInputAdaLNCausalTransformerModel(**kwargs).to(config["DEVICE"])
+    if kind == "temp_input_adapter":
+        return TempInputResidualAdapterCausalTransformerModel(**kwargs).to(config["DEVICE"])
+    if kind == "temp_input_gate":
+        return TempInputGatedCausalTransformerModel(**kwargs).to(config["DEVICE"])
     raise ValueError(f"Unknown MODEL_KIND: {kind}")
 
 
@@ -205,8 +228,12 @@ def load_extreme_train_datasets(config: dict):
     }
     train_f = filter_files_by_temperature_range(train_f, config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
     val_f = filter_files_by_temperature_range(val_f, config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
-    test_random_f = filter_files_by_temperature_side(test_random_f, "lt", config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
-    test_fixed_f = filter_files_by_temperature_side(test_fixed_f, "lt", config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
+    test_random_low_f = filter_files_by_temperature_side(test_random_f, "lt", config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
+    test_random_high_f = filter_files_by_temperature_side(test_random_f, "gt", config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
+    test_fixed_low_f = filter_files_by_temperature_side(test_fixed_f, "lt", config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
+    test_fixed_high_f = filter_files_by_temperature_side(test_fixed_f, "gt", config["TRAIN_TEMP_LOW"], config["TRAIN_TEMP_HIGH"])
+    test_random_f = sorted(set(test_random_low_f) | set(test_random_high_f))
+    test_fixed_f = sorted(set(test_fixed_low_f) | set(test_fixed_high_f))
     print(
         f"Temperature extreme filter | "
         f"train={raw_counts['train']}->{len(train_f)} | "

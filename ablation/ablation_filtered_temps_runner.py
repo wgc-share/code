@@ -30,6 +30,8 @@ from ablation_models import (
     FiLMCausalTransformerModel,
     TempInputAdaLNCausalTransformerModel,
     TempInputCausalTransformerModel,
+    TempInputGatedCausalTransformerModel,
+    TempInputResidualAdapterCausalTransformerModel,
 )
 from adaln_model import BatteryTDGCMModel as AdaLNBatteryTDGCMModel
 from scaling import PITDScaler
@@ -61,6 +63,24 @@ ABLATIONS = {
         "result_dir": "temp_input_adaln_no_ah_d96h4l3",
         "title": "Ablation: temperature appended to input + AdaLN modulation, no Ah loss",
         "model": "temp_input_adaln",
+        "stateful": True,
+        "p_reset": 0.05,
+        "use_ah_loss": False,
+    },
+    "temp_input_adapter_no_ah": {
+        "project": "PINT_TEMPERATURE_INPUT_ADAPTER_NO_AH_D96_H4_L3",
+        "result_dir": "temperature_temp_input_adapter_no_ah_d96h4l3",
+        "title": "Temperature method: temp input + temperature residual adapter, no Ah loss",
+        "model": "temp_input_adapter",
+        "stateful": True,
+        "p_reset": 0.05,
+        "use_ah_loss": False,
+    },
+    "temp_input_gate_no_ah": {
+        "project": "PINT_TEMPERATURE_INPUT_GATE_NO_AH_D96_H4_L3",
+        "result_dir": "temperature_temp_input_gate_no_ah_d96h4l3",
+        "title": "Temperature method: temp input + temperature gated Transformer output, no Ah loss",
+        "model": "temp_input_gate",
         "stateful": True,
         "p_reset": 0.05,
         "use_ah_loss": False,
@@ -229,6 +249,10 @@ def build_model(config: dict):
         return TempInputCausalTransformerModel(**kwargs).to(config["DEVICE"])
     if kind == "temp_input_adaln":
         return TempInputAdaLNCausalTransformerModel(**kwargs).to(config["DEVICE"])
+    if kind == "temp_input_adapter":
+        return TempInputResidualAdapterCausalTransformerModel(**kwargs).to(config["DEVICE"])
+    if kind == "temp_input_gate":
+        return TempInputGatedCausalTransformerModel(**kwargs).to(config["DEVICE"])
     if kind == "film":
         return FiLMCausalTransformerModel(**kwargs).to(config["DEVICE"])
     raise ValueError(f"Unknown MODEL_KIND: {kind}")
