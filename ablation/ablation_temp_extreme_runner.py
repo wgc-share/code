@@ -345,16 +345,40 @@ def evaluate_test_splits(model, scaler: PITDScaler, datasets: tuple, config: dic
             label=label,
         )
         print(f"{label} avg MAE: {avg_mae:.6f}")
-        for file_name, mae in file_maes.items():
-            rows.append(
-                {
-                    "split_order": split_order,
-                    "split": split_name,
-                    "file_name": file_name,
-                    "avg_mae": mae,
-                }
+        rows.append(
+            {
+                "trial_id": run_id,
+                "trial_index": 1,
+                "p_reset": config["P_RESET"],
+                "split_order": split_order,
+                "split": split_name,
+                "soc_start_order": 0,
+                "soc_start_percent": math.nan,
+                "metric_order": 1,
+                "metric_level": "total",
+                "segment_order": 0,
+                "segment_id": "total",
+                "condition": "total",
+                "cell_id": "",
+                "segment_index": "",
+                "avg_mae": avg_mae,
+                "files": len(file_maes),
+                "windows": len(dataset),
+                "batch_size": config["VAL_BATCH_SIZE"],
+            }
+        )
+        rows.extend(
+            aggregate_segment_rows(
+                {**config, "TRIAL_ID": run_id, "TRIAL_INDEX": 1, "SOC_BATCH_SIZE": config["VAL_BATCH_SIZE"]},
+                split_name,
+                split_order,
+                math.nan,
+                0,
+                file_maes,
+                dataset,
             )
-    return pd.DataFrame(rows)
+        )
+    return write_test_segment_metrics(rows, config["CSV_DIR"], run_id)
 
 
 def evaluate_soc_start_splits(model, scaler: PITDScaler, datasets: tuple, config: dict, run_id: str) -> pd.DataFrame:
