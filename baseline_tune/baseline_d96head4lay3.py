@@ -273,7 +273,11 @@ def evaluate_test_splits(model, scaler: PITDScaler, datasets: tuple, config: dic
             model,
             loader,
             scaler,
-            {"DEVICE": config["DEVICE"], "D_MODEL": config["D_MODEL"]},
+            {
+                "DEVICE": config["DEVICE"],
+                "D_MODEL": config["D_MODEL"],
+                "DISABLE_TQDM": config.get("DISABLE_TQDM", False),
+            },
             label=label,
             output_dir=config["CSV_DIR"],
             run_id=run_id,
@@ -526,7 +530,17 @@ def train_causal_adaln_dropout():
 
         pbar.close()
 
-        avg_val_mae, file_maes = evaluate_dataset(model, val_loader, scaler, {"DEVICE": config["DEVICE"], "D_MODEL": config["D_MODEL"]}, label=f"Epoch {epoch+1} Val")
+        avg_val_mae, file_maes = evaluate_dataset(
+            model,
+            val_loader,
+            scaler,
+            {
+                "DEVICE": config["DEVICE"],
+                "D_MODEL": config["D_MODEL"],
+                "DISABLE_TQDM": config.get("DISABLE_TQDM", False),
+            },
+            label=f"Epoch {epoch+1} Val",
+        )
         scheduler.step()
         for fn, mae in file_maes.items():
             val_mae_matrix[fn].append(mae)
