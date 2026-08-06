@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from adaln_model import BatteryTDGCMModel as AdaLNBatteryTDGCMModel
+from adaln_model import AdaLNTransformerBlock, BatteryTDGCMModel as AdaLNBatteryTDGCMModel
 
 
 class TempInputCausalTransformerModel(nn.Module):
