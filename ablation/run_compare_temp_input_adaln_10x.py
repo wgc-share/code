@@ -117,7 +117,8 @@ def main():
         status_path = run_root / f"{scope}_status.csv"
         write_csv(plan_path, plan_rows)
 
-        print("\n" + "-" * 100)
+        print("\n" + "=" * 120)
+        print(f"START SCOPE: {scope.upper()}")
         print(f"SCOPE    : {scope}")
         print(f"RUN_ROOT : {run_root}")
         print(f"PLAN     : {plan_path}")
@@ -186,6 +187,8 @@ def main():
             print(f"Step finished | status={status} | return_code={return_code}")
             if return_code != 0 and args.stop_on_error:
                 raise RuntimeError(f"Failed at round={round_idx}, method={method}. See {log_path}")
+
+        print(f"END SCOPE  : {scope.upper()}")
 
     print("\nAll scheduled comparison runs finished.")
 
