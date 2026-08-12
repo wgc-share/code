@@ -10,7 +10,9 @@ import ablation_filtered_temps_runner as runner
 BASE_ABLATION = "temp_input_adapter_no_ah"
 EPOCHS = 100
 START_EPOCHS = [25, 50, 75]
-LAMBDA_VALUES = [0.001, 0.005, 0.01]
+LAMBDA_VALUES = [0.0, 0.001, 0.005]
+REPEATS = 10
+BASE_SEED = 42
 
 
 def make_args(lambda_soc_mono: float, soc_mono_last_epochs: int) -> Namespace:
@@ -67,20 +69,39 @@ def main() -> None:
     print(f"EPOCHS        : {EPOCHS}")
     print(f"START_EPOCHS  : {START_EPOCHS}")
     print(f"LAMBDA_VALUES : {LAMBDA_VALUES}")
+    print(f"REPEATS       : {REPEATS}")
+    print(f"BASE_SEED     : {BASE_SEED}")
     print("Rule: monotonic loss is enabled only in the last (EPOCHS - start_epoch + 1) epochs.")
+    print("lambda=0.0 means no monotonic insertion; it is run as the plain baseline.")
     print("Each run will automatically evaluate:")
     print("  - filtered temp full-SOC")
     print("  - filtered temp multi-SOC")
     print("  - temperature interpolation multi-SOC (15-20C, 30-35C)")
     print()
 
+    planned = [(0.0, None)]
     for start_epoch in START_EPOCHS:
-        for lambda_soc_mono in LAMBDA_VALUES:
-            ablation_name = register_ablation(start_epoch, lambda_soc_mono)
-            args = make_args(lambda_soc_mono, max(1, EPOCHS - start_epoch + 1))
+        for lambda_soc_mono in (0.001, 0.005):
+            planned.append((lambda_soc_mono, start_epoch))
+
+    for repeat_idx in range(REPEATS):
+        seed = BASE_SEED + repeat_idx
+        print("\n" + "#" * 80)
+        print(f"REPEAT {repeat_idx + 1}/{REPEATS} | seed={seed}")
+        print("#" * 80)
+        for lambda_soc_mono, start_epoch in planned:
+            if lambda_soc_mono == 0.0:
+                ablation_name = BASE_ABLATION
+                args = make_args(0.0, 0)
+            else:
+                assert start_epoch is not None
+                ablation_name = register_ablation(start_epoch, lambda_soc_mono)
+                args = make_args(lambda_soc_mono, max(1, EPOCHS - start_epoch + 1))
+            args.seed = seed
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             print("\n" + "=" * 80)
-            print(f"Running {ablation_name} @ {stamp}")
+            label = f"{ablation_name}" if start_epoch is None else f"{ablation_name} | start={start_epoch} | lambda={lambda_soc_mono}"
+            print(f"Running {label} @ {stamp}")
             print("=" * 80)
             runner.train_ablation(ablation_name, args)
 
