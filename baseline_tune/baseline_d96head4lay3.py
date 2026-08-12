@@ -174,22 +174,27 @@ def load_all_datasets(config: dict):
     if empty_splits:
         raise RuntimeError(f"Empty split(s) after temperature filtering: {', '.join(empty_splits)}")
     suffix = temp_cache_suffix(config["TEMPS"], config["TEMP_TOLERANCE"])
+    sparse_step = int(config.get("SPARSE_STEP", 1))
 
     train_ds = BatteryTDGCMDataset(
         config["DATA_DIR"], train_f, window_size=config["WINDOW_SIZE"], stride=config["STRIDE"],
-        cache_file=os.path.join(config["CACHE_DIR"], f"train_cache_causal_adaln_dropout_{suffix}.pt"),
+        cache_file=os.path.join(config["CACHE_DIR"], f"train_cache_causal_adaln_dropout_{suffix}_s{sparse_step}.pt"),
+        sparse_step=sparse_step,
     )
     val_ds = BatteryTDGCMDataset(
         config["DATA_DIR"], val_f, window_size=config["WINDOW_SIZE"], stride=config["STRIDE"],
-        cache_file=os.path.join(config["CACHE_DIR"], f"val_cache_causal_adaln_dropout_{suffix}.pt"),
+        cache_file=os.path.join(config["CACHE_DIR"], f"val_cache_causal_adaln_dropout_{suffix}_s{sparse_step}.pt"),
+        sparse_step=sparse_step,
     )
     test_random_ds = BatteryTDGCMDataset(
         config["DATA_DIR"], test_random_f, window_size=config["WINDOW_SIZE"], stride=config["STRIDE"],
-        cache_file=os.path.join(config["CACHE_DIR"], f"test_random_cache_causal_adaln_dropout_{suffix}.pt"),
+        cache_file=os.path.join(config["CACHE_DIR"], f"test_random_cache_causal_adaln_dropout_{suffix}_s{sparse_step}.pt"),
+        sparse_step=sparse_step,
     )
     test_fixed_ds = BatteryTDGCMDataset(
         config["DATA_DIR"], test_fixed_f, window_size=config["WINDOW_SIZE"], stride=config["STRIDE"],
-        cache_file=os.path.join(config["CACHE_DIR"], f"test_fixed_cache_causal_adaln_dropout_{suffix}.pt"),
+        cache_file=os.path.join(config["CACHE_DIR"], f"test_fixed_cache_causal_adaln_dropout_{suffix}_s{sparse_step}.pt"),
+        sparse_step=sparse_step,
     )
     return train_ds, val_ds, test_random_ds, test_fixed_ds
 
@@ -210,15 +215,17 @@ def load_temperature_generalization_test_datasets(config: dict, range_label: str
             f"Empty temperature-generalization test split for {range_label}: "
             f"test_random={len(test_random_f)}, test_fixed={len(test_fixed_f)}"
         )
+    sparse_step = int(config.get("SPARSE_STEP", 1))
 
     test_random_ds = BatteryTDGCMDataset(
         config["DATA_DIR"],
         test_random_f,
         window_size=config["WINDOW_SIZE"],
         stride=config["STRIDE"],
+        sparse_step=sparse_step,
         cache_file=os.path.join(
             config["CACHE_DIR"],
-            f"test_random_cache_causal_adaln_dropout_tempgen_{range_label}.pt",
+            f"test_random_cache_causal_adaln_dropout_tempgen_{range_label}_s{sparse_step}.pt",
         ),
     )
     test_fixed_ds = BatteryTDGCMDataset(
@@ -226,9 +233,10 @@ def load_temperature_generalization_test_datasets(config: dict, range_label: str
         test_fixed_f,
         window_size=config["WINDOW_SIZE"],
         stride=config["STRIDE"],
+        sparse_step=sparse_step,
         cache_file=os.path.join(
             config["CACHE_DIR"],
-            f"test_fixed_cache_causal_adaln_dropout_tempgen_{range_label}.pt",
+            f"test_fixed_cache_causal_adaln_dropout_tempgen_{range_label}_s{sparse_step}.pt",
         ),
     )
     return None, None, test_random_ds, test_fixed_ds

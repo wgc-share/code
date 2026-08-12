@@ -320,20 +320,31 @@ def _pick_column(df: pd.DataFrame, candidates: Tuple[str, ...]) -> str:
 
 
 class BatteryTDGCMDataset(Dataset):
-    CACHE_VERSION = 2
+    CACHE_VERSION = 3
 
-    def __init__(self, data_dir, file_list, window_size=100, stride=100, cache_file="dataset_cache.pt"):
+    def __init__(
+        self,
+        data_dir,
+        file_list,
+        window_size=100,
+        stride=100,
+        cache_file="dataset_cache.pt",
+        sparse_step: int = 1,
+    ):
         if window_size <= 1:
             raise ValueError(f"window_size must be greater than 1, got {window_size}")
         if stride <= 0:
             raise ValueError(f"stride must be positive, got {stride}")
+        if sparse_step <= 0:
+            raise ValueError(f"sparse_step must be positive, got {sparse_step}")
 
         data_dir = str(Path(data_dir).resolve())
         file_list = list(file_list)
         self.window_size = window_size
         self.stride = stride
+        self.sparse_step = int(sparse_step)
         self.samples = []
-        cache_signature = self._cache_signature(data_dir, file_list, window_size, stride)
+        cache_signature = self._cache_signature(data_dir, file_list, window_size, stride, self.sparse_step)
 
         if os.path.exists(cache_file):
             try:
@@ -359,6 +370,8 @@ class BatteryTDGCMDataset(Dataset):
 
             meta = parse_segment_filename(file)
             df = pd.read_csv(filepath).ffill().bfill()
+            if self.sparse_step > 1:
+                df = df.iloc[:: self.sparse_step].reset_index(drop=True)
             if len(df) < window_size:
                 continue
 
@@ -457,10 +470,10 @@ class BatteryTDGCMDataset(Dataset):
         print(f"Cache saved to {cache_file} (total {len(self.samples)} windows)")
 
     @staticmethod
-    def _cache_signature(data_dir, file_list, window_size, stride):
+    def _cache_signature(data_dir, file_list, window_size, stride, sparse_step):
         digest = hashlib.sha256()
         digest.update(str(Path(data_dir).resolve()).encode("utf-8"))
-        digest.update(f"|window={window_size}|stride={stride}".encode("ascii"))
+        digest.update(f"|window={window_size}|stride={stride}|sparse={sparse_step}".encode("ascii"))
         for filename in file_list:
             filepath = Path(data_dir) / filename
             if not filepath.is_file():

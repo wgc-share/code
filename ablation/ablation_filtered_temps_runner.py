@@ -153,6 +153,36 @@ ABLATIONS = {
         "soc_mono_current_thr": 0.0,
         "soc_mono_margin": 0.0,
     },
+    "temp_input_adapter_soc_monotonic_last20_no_ah": {
+        "project": "PINT_ABLATION_TEMP_INPUT_ADAPTER_SOC_MONO_LAST20_NO_AH_D96_H4_L3",
+        "result_dir": "temp_input_adapter_soc_monotonic_last20_no_ah_d96h4l3",
+        "title": "Ablation: temp input adapter + SOC monotonicity in last 20 epochs, no Ah loss",
+        "model": "temp_input_adapter",
+        "stateful": True,
+        "p_reset": 0.05,
+        "use_ah_loss": False,
+        "use_soc_monotonic_loss": True,
+        "lambda_soc_mono": 0.01,
+        "soc_mono_segments": 5,
+        "soc_mono_current_thr": 0.0,
+        "soc_mono_margin": 0.0,
+        "soc_mono_last_epochs": 30,
+    },
+    "temp_input_adapter_tail_soc_monotonic_no_ah": {
+        "project": "PINT_ABLATION_TEMP_INPUT_ADAPTER_TAIL_SOC_MONO_NO_AH_D96_H4_L3",
+        "result_dir": "temp_input_adapter_tail_soc_monotonic_no_ah_d96h4l3",
+        "title": "Ablation: temp input adapter + tail SOC monotonicity, no Ah loss",
+        "model": "temp_input_adapter",
+        "stateful": True,
+        "p_reset": 0.05,
+        "use_ah_loss": False,
+        "use_soc_tail_monotonic_loss": True,
+        "lambda_soc_tail_mono": 0.002,
+        "soc_tail_mono_steps": 20,
+        "soc_tail_mono_segments": 4,
+        "soc_tail_mono_current_thr": 0.0,
+        "soc_tail_mono_margin": 0.0,
+    },
 }
 
 
@@ -188,6 +218,13 @@ def make_config(ablation_name: str, args: argparse.Namespace | None = None) -> d
             "SOC_MONO_SEGMENTS": int(spec.get("soc_mono_segments", 5)),
             "SOC_MONO_CURRENT_THR": float(spec.get("soc_mono_current_thr", 0.0)),
             "SOC_MONO_MARGIN": float(spec.get("soc_mono_margin", 0.0)),
+            "SOC_MONO_LAST_EPOCHS": int(spec.get("soc_mono_last_epochs", 0)),
+            "USE_SOC_TAIL_MONOTONIC_LOSS": bool(spec.get("use_soc_tail_monotonic_loss", False)),
+            "LAMBDA_SOC_TAIL_MONO": float(spec.get("lambda_soc_tail_mono", 0.0)),
+            "SOC_TAIL_MONO_STEPS": int(spec.get("soc_tail_mono_steps", 20)),
+            "SOC_TAIL_MONO_SEGMENTS": int(spec.get("soc_tail_mono_segments", 4)),
+            "SOC_TAIL_MONO_CURRENT_THR": float(spec.get("soc_tail_mono_current_thr", 0.0)),
+            "SOC_TAIL_MONO_MARGIN": float(spec.get("soc_tail_mono_margin", 0.0)),
             "CACHE_DIR": str(dirs["cache_dir"]),
             "PTH_DIR": str(dirs["pth_dir"]),
             "CSV_DIR": str(dirs["csv_dir"]),
@@ -213,6 +250,8 @@ def make_config(ablation_name: str, args: argparse.Namespace | None = None) -> d
             cfg["SOC_MONO_CURRENT_THR"] = float(args.soc_mono_current_thr)
         if args.soc_mono_margin is not None:
             cfg["SOC_MONO_MARGIN"] = float(args.soc_mono_margin)
+        if args.soc_mono_last_epochs is not None:
+            cfg["SOC_MONO_LAST_EPOCHS"] = int(args.soc_mono_last_epochs)
     return cfg
 
 
@@ -228,7 +267,16 @@ def print_config(config: dict):
         print(
             f"SOC_MONO   : lambda={config['LAMBDA_SOC_MONO']} | "
             f"segments={config['SOC_MONO_SEGMENTS']} | "
-            f"current_thr={config['SOC_MONO_CURRENT_THR']} | margin={config['SOC_MONO_MARGIN']}"
+            f"current_thr={config['SOC_MONO_CURRENT_THR']} | margin={config['SOC_MONO_MARGIN']} | "
+            f"last_epochs={config.get('SOC_MONO_LAST_EPOCHS', 0)}"
+        )
+    print(f"USE_SOC_TAIL_MONO: {config.get('USE_SOC_TAIL_MONOTONIC_LOSS', False)}")
+    if config.get("USE_SOC_TAIL_MONOTONIC_LOSS", False):
+        print(
+            f"SOC_TAIL_M : lambda={config['LAMBDA_SOC_TAIL_MONO']} | "
+            f"steps={config['SOC_TAIL_MONO_STEPS']} | "
+            f"segments={config['SOC_TAIL_MONO_SEGMENTS']} | "
+            f"current_thr={config['SOC_TAIL_MONO_CURRENT_THR']} | margin={config['SOC_TAIL_MONO_MARGIN']}"
         )
     sys.stdout.flush()
 
@@ -302,6 +350,14 @@ def apply_optional_soc_monotonic_loss(loss, y_p, x_current_raw, mask, config, lo
         loss_bucket.append(0.0)
         return loss
 
+    last_epochs = int(config.get("SOC_MONO_LAST_EPOCHS", 0))
+    if last_epochs > 0:
+        start_epoch = max(1, int(config["EPOCHS"]) - last_epochs + 1)
+        current_epoch = int(config.get("_CURRENT_EPOCH", 1))
+        if current_epoch < start_epoch:
+            loss_bucket.append(0.0)
+            return loss
+
     mono = soc_monotonic_loss(
         y_p,
         x_current_raw,
@@ -314,8 +370,65 @@ def apply_optional_soc_monotonic_loss(loss, y_p, x_current_raw, mask, config, lo
     return loss + config["LAMBDA_SOC_MONO"] * mono
 
 
+def tail_soc_monotonic_loss(
+    soc_pred,
+    current_raw,
+    mask,
+    tail_steps: int = 20,
+    segments: int = 4,
+    current_thr: float = 0.0,
+    margin: float = 0.0,
+):
+    if tail_steps <= 0 or segments <= 0:
+        return soc_pred.new_tensor(0.0)
+
+    batch_size, seq_len, _ = soc_pred.shape
+    tail_len = min(tail_steps, seq_len)
+    tail_start = seq_len - tail_len
+    soc_tail = soc_pred[:, tail_start:, :]
+    current_tail = current_raw[:, tail_start:]
+
+    terms = []
+    for seg_idx in range(segments):
+        start = int(tail_len * seg_idx / segments)
+        end = int(tail_len * (seg_idx + 1) / segments)
+        if end <= start + 1:
+            continue
+        i_mean = current_tail[:, start:end].mean(dim=1)
+        discharge = i_mean > current_thr
+        soc_start = soc_tail[:, start, 0]
+        soc_end = soc_tail[:, end - 1, 0]
+        violation = torch.relu(soc_end - soc_start + margin)
+        terms.append(violation * discharge.to(dtype=violation.dtype))
+
+    if not terms:
+        return soc_pred.new_tensor(0.0)
+
+    per_sample = torch.stack(terms, dim=1).mean(dim=1)
+    return (per_sample * mask).sum() / (mask.sum() + 1e-9)
+
+
+def apply_optional_tail_soc_monotonic_loss(loss, y_p, x_current_raw, mask, config, loss_bucket):
+    if not config.get("USE_SOC_TAIL_MONOTONIC_LOSS", False):
+        loss_bucket.append(0.0)
+        return loss
+
+    mono = tail_soc_monotonic_loss(
+        y_p,
+        x_current_raw,
+        mask,
+        tail_steps=config["SOC_TAIL_MONO_STEPS"],
+        segments=config["SOC_TAIL_MONO_SEGMENTS"],
+        current_thr=config["SOC_TAIL_MONO_CURRENT_THR"],
+        margin=config["SOC_TAIL_MONO_MARGIN"],
+    )
+    loss_bucket.append(float(mono.detach().item()))
+    return loss + config["LAMBDA_SOC_TAIL_MONO"] * mono
+
+
 def train_one_epoch_stateful(model, train_ds, scaler, optimizer, criterion, config, epoch: int):
     model.train()
+    config["_CURRENT_EPOCH"] = epoch
     manager = BalancedSchemeBManager(train_ds, config["BATCH_SIZE"])
     h_state = torch.zeros(1, config["BATCH_SIZE"], config["D_MODEL"], device=config["DEVICE"])
     pbar = tqdm(
@@ -364,6 +477,7 @@ def train_one_epoch_stateful(model, train_ds, scaler, optimizer, criterion, conf
         y_p, h_state = model(x_n, t_n, h_state)
         loss, l_d, l_ah, l_range = criterion(y_p, y, x[:, :, 0], q, f_t, curr_lambda, m_t)
         loss = apply_optional_soc_monotonic_loss(loss, y_p, x[:, :, 0], m_t, config, losses["soc_mono"])
+        loss = apply_optional_tail_soc_monotonic_loss(loss, y_p, x[:, :, 0], m_t, config, losses["soc_tail_mono"])
 
         optimizer.zero_grad()
         loss.backward()
@@ -382,6 +496,7 @@ def train_one_epoch_stateful(model, train_ds, scaler, optimizer, criterion, conf
 
 def train_one_epoch_independent(model, train_ds, scaler, optimizer, criterion, config, epoch: int):
     model.train()
+    config["_CURRENT_EPOCH"] = epoch
     loader = DataLoader(train_ds, batch_size=config["BATCH_SIZE"], shuffle=True)
     pbar = tqdm(
         total=len(loader),
@@ -410,6 +525,7 @@ def train_one_epoch_independent(model, train_ds, scaler, optimizer, criterion, c
         y_p, _ = model(x_n, t_n, h_prev=None)
         loss, l_d, l_ah, l_range = criterion(y_p, y, x[:, :, 0], q, first, curr_lambda, mask)
         loss = apply_optional_soc_monotonic_loss(loss, y_p, x[:, :, 0], mask, config, losses["soc_mono"])
+        loss = apply_optional_tail_soc_monotonic_loss(loss, y_p, x[:, :, 0], mask, config, losses["soc_tail_mono"])
 
         optimizer.zero_grad()
         loss.backward()
@@ -560,6 +676,7 @@ def train_ablation(ablation_name: str, args: argparse.Namespace):
             "Train_Data_Loss": float(np.mean(losses["data"])) if losses["data"] else float("nan"),
             "Train_Ah_Loss": float(np.mean(losses["ah"])) if losses["ah"] else float("nan"),
             "Train_SOC_Mono_Loss": float(np.mean(losses["soc_mono"])) if losses["soc_mono"] else float("nan"),
+            "Train_SOC_Tail_Mono_Loss": float(np.mean(losses["soc_tail_mono"])) if losses["soc_tail_mono"] else float("nan"),
             "Train_Range_Loss": float(np.mean(losses["range"])) if losses["range"] else float("nan"),
             "Val_MAE_Avg": avg_val_mae,
             "Best_Val_MAE_So_Far": best_val_mae,
@@ -574,6 +691,7 @@ def train_ablation(ablation_name: str, args: argparse.Namespace):
         print(
             f"[Epoch {epoch}] summary | train={row['Train_Loss']:.6f} | data={row['Train_Data_Loss']:.6f} | "
             f"ah={row['Train_Ah_Loss']:.6f} | soc_mono={row['Train_SOC_Mono_Loss']:.6f} | "
+            f"tail_mono={row['Train_SOC_Tail_Mono_Loss']:.6f} | "
             f"val={avg_val_mae:.6f} | best={best_val_mae:.6f} | "
             f"best_epoch={best_epoch} | lambda_ah={curr_lambda:.2f}",
             flush=True,
@@ -624,6 +742,12 @@ def make_parser(description: str):
     parser.add_argument("--soc-mono-segments", type=int, default=None)
     parser.add_argument("--soc-mono-current-thr", type=float, default=None)
     parser.add_argument("--soc-mono-margin", type=float, default=None)
+    parser.add_argument("--soc-mono-last-epochs", type=int, default=None)
+    parser.add_argument("--lambda-soc-tail-mono", type=float, default=None)
+    parser.add_argument("--soc-tail-mono-steps", type=int, default=None)
+    parser.add_argument("--soc-tail-mono-segments", type=int, default=None)
+    parser.add_argument("--soc-tail-mono-current-thr", type=float, default=None)
+    parser.add_argument("--soc-tail-mono-margin", type=float, default=None)
     return parser
 
 
